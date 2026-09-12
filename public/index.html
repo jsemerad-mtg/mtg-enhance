@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>MTG Enhance — Proof of Concept</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<main id="app">
+
+  <!-- HOME: host or join -->
+  <section id="screen-home" class="screen">
+    <h1 class="wordmark">MTG Enhance</h1>
+    <p class="tagline">Life totals and a soundboard for the table.</p>
+
+    <div class="stack">
+      <button id="btn-host" class="btn btn-primary">Host a game</button>
+
+      <div class="divider">or</div>
+
+      <form id="form-join" class="join-form">
+        <input
+          id="input-code"
+          class="code-input"
+          type="text"
+          inputmode="text"
+          maxlength="4"
+          placeholder="CODE"
+          autocomplete="off"
+          autocapitalize="characters"
+        />
+        <button type="submit" class="btn btn-secondary">Join a game</button>
+      </form>
+    </div>
+
+    <p id="home-error" class="error" hidden></p>
+  </section>
+
+  <!-- LOBBY: pick a name, commander, colors -->
+  <section id="screen-lobby" class="screen" hidden>
+    <p class="eyebrow-code">Table code</p>
+    <p id="lobby-code" class="join-code"></p>
+
+    <form id="form-lobby" class="lobby-form">
+      <label class="field">
+        <span>Your name</span>
+        <input id="input-name" type="text" maxlength="20" required autocomplete="off" />
+      </label>
+
+      <label class="field">
+        <span>Commander</span>
+        <input id="input-commander" type="text" maxlength="40" autocomplete="off" placeholder="e.g. Atraxa, Grand Unifier" />
+      </label>
+
+      <fieldset class="field colors-field">
+        <legend>Color identity</legend>
+        <div class="color-toggles">
+          <label class="color-toggle color-w"><input type="checkbox" value="W" /><span>W</span></label>
+          <label class="color-toggle color-u"><input type="checkbox" value="U" /><span>U</span></label>
+          <label class="color-toggle color-b"><input type="checkbox" value="B" /><span>B</span></label>
+          <label class="color-toggle color-r"><input type="checkbox" value="R" /><span>R</span></label>
+          <label class="color-toggle color-g"><input type="checkbox" value="G" /><span>G</span></label>
+        </div>
+      </fieldset>
+
+      <button type="submit" class="btn btn-primary">Sit down at the table</button>
+    </form>
+  </section>
+
+  <!-- GAME: life totals + soundboard -->
+  <section id="screen-game" class="screen" hidden>
+    <header class="game-header">
+      <span class="join-code-small" id="game-code"></span>
+      <span id="host-badge" class="host-badge" hidden>You're hosting — sounds play here</span>
+    </header>
+
+    <div class="self-panel">
+      <p class="player-name" id="self-name"></p>
+      <div class="life-row">
+        <button class="life-btn" data-delta="-1">−1</button>
+        <span class="life-total" id="self-life">40</span>
+        <button class="life-btn" data-delta="1">+1</button>
+      </div>
+    </div>
+
+    <div id="opponents" class="opponents"></div>
+
+    <div class="soundboard">
+      <button id="btn-broadcast" class="sound-btn sound-broadcast">
+        <span class="sound-label">Board Wipe</span>
+        <span class="sound-sub">plays on host's device</span>
+      </button>
+
+      <button id="btn-ambient" class="sound-btn sound-ambient">
+        <span class="sound-label">Ambient</span>
+        <span class="sound-sub">toggle your soundscape</span>
+      </button>
+
+      <button id="btn-taunt" class="sound-btn sound-taunt">
+        <span class="sound-label">Taunt</span>
+        <span class="sound-sub" id="taunt-sub">8s cooldown</span>
+      </button>
+
+      <div class="sound-btn sound-target-wrap">
+        <select id="select-target" class="target-select"></select>
+        <button id="btn-damage" class="sound-btn sound-target">
+          <span class="sound-label">Deal Damage</span>
+          <span class="sound-sub">plays on their device</span>
+        </button>
+        <input id="input-damage-amount" class="damage-amount" type="number" value="3" min="1" max="99" />
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script src="/client.js"></script>
+</body>
+</html>

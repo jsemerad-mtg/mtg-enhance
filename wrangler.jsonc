@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mtg-enhance-poc",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+
+  // Durable Object: one GameSession instance per 4-character join code.
+  "durable_objects": {
+    "bindings": [
+      { "name": "GAME_SESSION", "class_name": "GameSession" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["GameSession"] }
+  ],
+
+  // Serves everything in public/ (index.html, client.js, style.css).
+  // The Worker's fetch handler falls through to this binding for any
+  // request that isn't /api/create or /ws/*.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  }
+}
