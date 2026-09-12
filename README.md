@@ -16,14 +16,31 @@ architecture calls for.
   the Web Audio API for now — no audio files yet, matching how the earlier
   MTG Enhance skeleton used placeholder tones.
 
-## The 4 sounds and their routing
+## The soundboard and the Deal Damage panel
 
-| Button | Who can press it | Whose device plays it |
-|---|---|---|
-| Board Wipe | anyone | host only |
-| Ambient | anyone (toggles their own) | host only |
-| Deal Damage | anyone, targets another player | the targeted player only |
-| Taunt | anyone, 8s per-player cooldown | the presser only |
+A single row of four icon buttons:
+
+| Icon | Sound | Who can press it | Whose device plays it |
+|---|---|---|---|
+| Mushroom cloud | Board Wipe | anyone | host only — 60s **session-wide** cooldown (shared by everyone, not per-player) |
+| Music notes | Ambient (toggle) | anyone (toggles their own) | host only |
+| Laughing face | Taunt | anyone | presser only — 8s **per-player** cooldown |
+| Card outline | Draw Card | anyone | presser only — no cooldown |
+
+Below that, the Deal Damage panel is three columns plus an Apply button,
+rather than one button per action:
+
+1. **Target** — All players, Each opponent, Me, or one specific named
+   opponent (the list is generated from whoever's actually in the session).
+2. **Kind** — Gains Life, Loses Life, or Takes Damage. All three just change
+   the sign of the life total, but each plays a different sound — mirroring
+   the real rules distinction between losing life and taking damage.
+3. **Amount** — a scroll-snapping number wheel, 0–20, defaulting to 1.
+
+Pressing Apply sends one event that updates every affected life total and
+plays the matching sound on each of their devices — e.g. "each opponent
+loses 1" hits every opponent's total and their device in a single press,
+instead of each player manually adjusting their own.
 
 This matches the colocated-mode rule: ambient/broadcast sounds would echo
 across phones sitting near each other, so only the host's device (the one

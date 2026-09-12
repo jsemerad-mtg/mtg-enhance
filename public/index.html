@@ -75,7 +75,10 @@
   <!-- GAME: life totals + soundboard -->
   <section id="screen-game" class="screen" hidden>
     <header class="game-header">
-      <span class="join-code-small" id="game-code"></span>
+      <div class="code-box">
+        <span class="code-label">Game code</span>
+        <span class="join-code-small" id="game-code"></span>
+      </div>
       <span id="host-badge" class="host-badge" hidden>You're hosting — sounds play here</span>
     </header>
 
@@ -91,29 +94,56 @@
     <div id="opponents" class="opponents"></div>
 
     <div class="soundboard">
-      <button id="btn-broadcast" class="sound-btn sound-broadcast">
-        <span class="sound-label">Board Wipe</span>
-        <span class="sound-sub">plays on host's device</span>
+      <button id="btn-broadcast" class="icon-btn" aria-label="Board Wipe">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v4M9 7c0 2 1.3 3.2 3 3.2S15 9 15 7" />
+          <path d="M7 10c-1.8 1-2.5 3-2 5 .6 2.2 2.8 3.5 5 3.2.6 1.4 2 2.3 3.5 2.1 1.8-.2 3.1-1.8 3-3.6 1.9-.2 3.3-1.9 3.1-3.8-.2-1.7-1.6-3-3.3-3.1.3-2-1-3.9-3-4.3-2.2-.5-4.4.9-4.8 3.1-.2 1-.1 2 .3 2.9" />
+        </svg>
+        <span class="icon-caption">Wipe</span>
+        <span class="icon-sub" id="broadcast-sub"></span>
       </button>
 
-      <button id="btn-ambient" class="sound-btn sound-ambient">
-        <span class="sound-label">Ambient</span>
-        <span class="sound-sub">toggle your soundscape</span>
+      <button id="btn-ambient" class="icon-btn" aria-label="Ambient music">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 18V5l11-2v13" />
+          <circle cx="6.5" cy="18" r="2.5" />
+          <circle cx="17.5" cy="16" r="2.5" />
+        </svg>
+        <span class="icon-caption">Music</span>
       </button>
 
-      <button id="btn-taunt" class="sound-btn sound-taunt">
-        <span class="sound-label">Taunt</span>
-        <span class="sound-sub" id="taunt-sub">8s cooldown</span>
+      <button id="btn-taunt" class="icon-btn" aria-label="Taunt">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M8 10.5c.3-.6.9-1 1.5-1s1.2.4 1.5 1M13 10.5c.3-.6.9-1 1.5-1s1.2.4 1.5 1" />
+          <path d="M7.5 14c1 2 2.7 3 4.5 3s3.5-1 4.5-3" />
+        </svg>
+        <span class="icon-caption">Taunt</span>
+        <span class="icon-sub" id="taunt-sub"></span>
       </button>
 
-      <div class="sound-btn sound-target-wrap">
-        <select id="select-target" class="target-select"></select>
-        <button id="btn-damage" class="sound-btn sound-target">
-          <span class="sound-label">Deal Damage</span>
-          <span class="sound-sub">plays on their device</span>
-        </button>
-        <input id="input-damage-amount" class="damage-amount" type="number" value="3" min="1" max="99" />
+      <button id="btn-draw" class="icon-btn" aria-label="Draw card">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="3" width="14" height="18" rx="2" />
+          <path d="M9 8h6M9 12h6M9 16h3" />
+        </svg>
+        <span class="icon-caption">Draw</span>
+      </button>
+    </div>
+
+    <div class="life-event-panel">
+      <div class="life-event-columns">
+        <div class="toggle-col" id="target-toggle-group"></div>
+        <div class="toggle-col" id="kind-toggle-group">
+          <button type="button" class="toggle-btn" data-value="gain">Gains Life</button>
+          <button type="button" class="toggle-btn" data-value="loss">Loses Life</button>
+          <button type="button" class="toggle-btn active" data-value="damage">Takes Damage</button>
+        </div>
+        <div class="wheel-col">
+          <div class="number-wheel" id="wheel-amount"></div>
+        </div>
       </div>
+      <button id="btn-apply-life-event" class="btn btn-primary apply-btn">Apply</button>
     </div>
   </section>
 

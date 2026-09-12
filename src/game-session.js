@@ -4,7 +4,29 @@ import { DurableObject } from "cloudflare:workers";
 // always route to the host's device only. A `mode` field is kept on
 // state now so remote mode (everyone hears ambient/broadcast) is a
 // routing-logic change later, not a schema change.
-const TAUNT_COOLDOWN_MS = 8000;
+const COOLDOWNS_MS = {
+  taunt: 8000,
+  // Board Wipe is a shared, session-wide cooldown (see checkCooldown's
+  // `key` argument below) rather than per-player — one board wipe at a
+  // time makes more sense thematically than each player having their own.
+  broadcast: 60000,
+};
+
+// Looks up remainingMs for `soundId` against `key` in state.cooldowns,
+// recording a fresh trigger time when the cooldown has cleared. A soundId
+// with no entry in COOLDOWNS_MS is always allowed (e.g. Draw Card, which
+// has no cooldown for now but can get one later just by adding an entry).
+function checkCooldown(state, soundId, key) {
+  const cooldownMs = COOLDOWNS_MS[soundId];
+  if (!cooldownMs) return { ok: true };
+  const last = state.cooldowns[key] ?? 0;
+  const now = Date.now();
+  if (now - last < cooldownMs) {
+    return { ok: false, remainingMs: cooldownMs - (now - last) };
+  }
+  state.cooldowns[key] = now;
+  return { ok: true };
+}
 
 function initialState(sessionId) {
   return {
@@ -150,29 +172,77 @@ export class GameSession extends DurableObject {
         break;
       }
 
-      case "damage_player": {
-        const target = this.sessionState.players[msg.targetPlayerId];
-        if (!target || typeof msg.amount !== "number") return;
-        target.lifeTotal -= msg.amount;
+      case "life_event": {
+        // Covers Deal Damage's three flavors — gaining life, losing life,
+        // and taking damage — since they only differ in the delta's sign
+        // and which sound plays, not in how targets are resolved.
+        const amount = Number(msg.amount);
+        if (!amount || amount <= 0) return;
+        const kind = msg.kind === "gain" ? "gain" : msg.kind === "loss" ? "loss" : "damage";
+        const delta = kind === "gain" ? amount : -amount;
+        const soundId = kind === "gain" ? "life_gain" : kind === "loss" ? "life_loss" : "damage";
+
+        let targets = [];
+        if (msg.scope === "all") {
+          // Everyone at the table, including whoever pressed it — for
+          // board-wide effects like "each player takes 1 damage".
+          targets = Object.values(this.sessionState.players);
+        } else if (msg.scope === "opponents") {
+          targets = Object.values(this.sessionState.players).filter((p) => p.id !== att.playerId);
+        } else if (msg.scope === "single" && msg.targetPlayerId) {
+          // Deliberately allowed to target yourself — fetch lands,
+          // painlands, and other self-inflicted life loss need this.
+          const target = this.sessionState.players[msg.targetPlayerId];
+          if (target) targets = [target];
+        }
+        if (targets.length === 0) return;
+
+        for (const target of targets) {
+          target.lifeTotal += delta;
+        }
         await this.persist();
-        this.broadcast({ type: "life_update", playerId: target.id, lifeTotal: target.lifeTotal });
-        // Targeted sound: only the damaged player's own device plays it,
-        // regardless of colocated/remote mode.
-        this.sendToPlayer(target.id, {
+
+        for (const target of targets) {
+          this.broadcast({ type: "life_update", playerId: target.id, lifeTotal: target.lifeTotal });
+          // Only the affected player's own device plays the sound,
+          // regardless of colocated/remote mode — true whether this is a
+          // single target or one of a group hit by the same event.
+          this.sendToPlayer(target.id, {
+            type: "play_sound",
+            soundId,
+            fromPlayerId: att.playerId,
+          });
+        }
+        break;
+      }
+
+      case "trigger_broadcast": {
+        // Any player can press Board Wipe — colocated rule means only the
+        // host's device actually plays it, and the cooldown is session-wide
+        // (not per-player) so it doesn't fire repeatedly in quick succession.
+        const result = checkCooldown(this.sessionState, "broadcast", "broadcast");
+        if (!result.ok) {
+          ws.send(JSON.stringify({ type: "cooldown_rejected", soundId: "broadcast", remainingMs: result.remainingMs }));
+          return;
+        }
+        await this.persist();
+        // Broadcast the cooldown to everyone, not just the presser — since
+        // it's shared, every screen should grey out the button together.
+        this.broadcast({ type: "cooldown_started", soundId: "broadcast", remainingMs: COOLDOWNS_MS.broadcast });
+        this.sendToPlayer(this.sessionState.hostId, {
           type: "play_sound",
-          soundId: "targeted",
+          soundId: "broadcast",
           fromPlayerId: att.playerId,
         });
         break;
       }
 
-      case "trigger_broadcast": {
-        // Any player can press "Wrath" — colocated rule means only the
-        // host's device actually plays it, so it doesn't double up
-        // across phones sitting a foot apart on the table.
-        this.sendToPlayer(this.sessionState.hostId, {
+      case "trigger_draw_card": {
+        // Self-triggered, no cooldown — drawing happens too often per turn
+        // to gate it the way Taunt or Board Wipe are gated.
+        this.sendToPlayer(att.playerId, {
           type: "play_sound",
-          soundId: "broadcast",
+          soundId: "draw_card",
           fromPlayerId: att.playerId,
         });
         break;
@@ -196,20 +266,11 @@ export class GameSession extends DurableObject {
       }
 
       case "trigger_taunt": {
-        const key = `${att.playerId}:taunt`;
-        const last = this.sessionState.cooldowns[key] ?? 0;
-        const now = Date.now();
-        if (now - last < TAUNT_COOLDOWN_MS) {
-          ws.send(
-            JSON.stringify({
-              type: "cooldown_rejected",
-              soundId: "taunt",
-              remainingMs: TAUNT_COOLDOWN_MS - (now - last),
-            })
-          );
+        const result = checkCooldown(this.sessionState, "taunt", `${att.playerId}:taunt`);
+        if (!result.ok) {
+          ws.send(JSON.stringify({ type: "cooldown_rejected", soundId: "taunt", remainingMs: result.remainingMs }));
           return;
         }
-        this.sessionState.cooldowns[key] = now;
         await this.persist();
         // Self-triggered: only your own device plays it.
         this.sendToPlayer(att.playerId, {

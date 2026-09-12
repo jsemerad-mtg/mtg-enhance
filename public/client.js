@@ -39,9 +39,26 @@ function playBroadcast() {
   [523, 392, 262].forEach((freq, i) => tone({ freq, duration: 0.9, type: "sawtooth", gain: 0.15, delay: i * 0.12 }));
 }
 
-// Targeted damage: a short sharp hit.
-function playTargeted() {
+// Takes Damage: a short sharp hit.
+function playDamage() {
   tone({ freq: 140, duration: 0.25, type: "square", gain: 0.25 });
+}
+
+// Loses Life: a softer, sadder descending tone — distinct from a damage hit.
+function playLifeLoss() {
+  tone({ freq: 300, duration: 0.3, type: "sine", gain: 0.15 });
+}
+
+// Gains Life: a brief bright ascending twinkle.
+function playLifeGain() {
+  tone({ freq: 660, duration: 0.18, type: "sine", gain: 0.18 });
+  tone({ freq: 880, duration: 0.22, type: "sine", gain: 0.18, delay: 0.08 });
+}
+
+// Draw Card: a quick two-click card-flip placeholder.
+function playDrawCard() {
+  tone({ freq: 900, duration: 0.06, type: "square", gain: 0.12 });
+  tone({ freq: 500, duration: 0.05, type: "square", gain: 0.1, delay: 0.05 });
 }
 
 // Self taunt: a quick two-note blip.
@@ -83,7 +100,14 @@ let code = null;
 let selfId = null;
 let session = { players: {}, hostId: null, ambientActivePlayerId: null };
 let ambientIsMine = false;
-let tauntTimer = null;
+const cooldownTimers = {}; // soundId -> interval handle
+
+// Deal Damage selections: who it applies to, which of the three flavors,
+// and how much — assembled into one "Apply" press rather than firing on
+// every toggle tap.
+let selectedTargetValue = "opponents";
+let selectedKindValue = "damage";
+let wheelAmount = 1;
 
 function storageKey(c) {
   return `mtge:${c}`;
@@ -109,29 +133,59 @@ function render() {
   $("#self-life").textContent = self.lifeTotal;
   $("#host-badge").hidden = !self.isHost;
 
-  const opponents = Object.values(session.players).filter((p) => p.id !== selfId);
+  const allPlayers = Object.values(session.players);
+  const opponents = allPlayers.filter((p) => p.id !== selfId);
 
   $("#opponents").innerHTML = opponents
     .map((p) => {
       const dots = (p.colorIdentity || []).map((c) => `<span class="color-dot color-${c.toLowerCase()}"></span>`).join("");
       const dead = p.lifeTotal <= 0 ? "dead" : "";
+      const commander = p.commanderName
+        ? `<span class="opponent-commander">${escapeHtml(p.commanderName)}</span>`
+        : "";
       return `<div class="opponent-row">
-        <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span> ${dots}</span>
-        <span class="opponent-life">${p.lifeTotal}</span>
+        <div class="opponent-top">
+          <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span> ${dots}</span>
+          <span class="opponent-life">${p.lifeTotal}</span>
+        </div>
+        ${commander}
       </div>`;
     })
     .join("");
 
-  const select = $("#select-target");
-  const prevValue = select.value;
-  select.innerHTML = opponents.map((p) => `<option value="${p.id}">${escapeHtml(p.displayName)}</option>`).join("");
-  if (opponents.some((p) => p.id === prevValue)) select.value = prevValue;
+  // Damage target options: everyone at once, every opponent at once, or one
+  // specific player — including yourself, for self-inflicted damage (fetch
+  // lands, painlands, etc).
+  renderTargetToggles(opponents);
 
   ambientIsMine = session.ambientActivePlayerId === selfId;
   $("#btn-ambient").classList.toggle("active", !!session.ambientActivePlayerId);
-  $("#btn-ambient .sound-sub").textContent = session.ambientActivePlayerId
-    ? `playing: ${session.players[session.ambientActivePlayerId]?.displayName || "—"}`
-    : "toggle your soundscape";
+}
+
+function renderTargetToggles(opponents) {
+  const options = [
+    { value: "all", label: "All players" },
+    { value: "opponents", label: "Each opponent" },
+    { value: selfId, label: "Me" },
+    ...opponents.map((p) => ({ value: p.id, label: p.displayName })),
+  ];
+  if (!options.some((o) => o.value === selectedTargetValue)) {
+    selectedTargetValue = "opponents";
+  }
+
+  const container = $("#target-toggle-group");
+  container.innerHTML = options
+    .map(
+      (o) =>
+        `<button type="button" class="toggle-btn${o.value === selectedTargetValue ? " active" : ""}" data-value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</button>`
+    )
+    .join("");
+  container.querySelectorAll(".toggle-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      selectedTargetValue = btn.dataset.value;
+      renderTargetToggles(opponents);
+    });
+  });
 }
 
 function escapeHtml(str) {
@@ -193,14 +247,21 @@ function connectAndJoin(joinCode, lobbyInfo) {
       }
       case "play_sound": {
         if (msg.soundId === "broadcast") playBroadcast();
-        if (msg.soundId === "targeted") playTargeted();
+        if (msg.soundId === "damage") playDamage();
+        if (msg.soundId === "life_loss") playLifeLoss();
+        if (msg.soundId === "life_gain") playLifeGain();
         if (msg.soundId === "taunt") playTaunt();
+        if (msg.soundId === "draw_card") playDrawCard();
         if (msg.soundId === "ambient_on") playAmbientOn(msg.colorIdentity);
         if (msg.soundId === "ambient_off") stopAmbient();
         break;
       }
-      case "cooldown_rejected": {
-        if (msg.soundId === "taunt") showTauntCooldown(msg.remainingMs);
+      case "cooldown_rejected":
+      case "cooldown_started": {
+        // Both mean the same thing to the UI: show/refresh the countdown.
+        // "_started" additionally reaches players who didn't press the
+        // button themselves, for Board Wipe's shared cooldown.
+        showCooldown(msg.soundId, msg.remainingMs);
         break;
       }
       case "error": {
@@ -216,20 +277,27 @@ function connectAndJoin(joinCode, lobbyInfo) {
   });
 }
 
-function showTauntCooldown(remainingMs) {
-  const btn = $("#btn-taunt");
-  const sub = $("#taunt-sub");
-  btn.disabled = true;
-  clearInterval(tauntTimer);
+const COOLDOWN_BUTTONS = {
+  broadcast: { btn: "#btn-broadcast", sub: "#broadcast-sub" },
+  taunt: { btn: "#btn-taunt", sub: "#taunt-sub" },
+};
+
+function showCooldown(soundId, remainingMs) {
+  const refs = COOLDOWN_BUTTONS[soundId];
+  if (!refs) return;
+  const btn = $(refs.btn);
+  const sub = $(refs.sub);
+  btn.classList.add("on-cooldown");
+  clearInterval(cooldownTimers[soundId]);
   const end = Date.now() + remainingMs;
-  tauntTimer = setInterval(() => {
+  cooldownTimers[soundId] = setInterval(() => {
     const left = Math.ceil((end - Date.now()) / 1000);
     if (left <= 0) {
-      clearInterval(tauntTimer);
-      btn.disabled = false;
-      sub.textContent = "8s cooldown";
+      clearInterval(cooldownTimers[soundId]);
+      btn.classList.remove("on-cooldown");
+      sub.textContent = "";
     } else {
-      sub.textContent = `wait ${left}s`;
+      sub.textContent = `${left}s`;
     }
   }, 200);
 }
@@ -311,10 +379,62 @@ $("#btn-taunt").addEventListener("click", () => {
   ws?.send(JSON.stringify({ type: "trigger_taunt" }));
 });
 
-$("#btn-damage").addEventListener("click", () => {
+$("#btn-draw").addEventListener("click", () => {
   ensureAudio();
-  const targetPlayerId = $("#select-target").value;
-  const amount = Number($("#input-damage-amount").value) || 0;
-  if (!targetPlayerId || amount <= 0) return;
-  ws?.send(JSON.stringify({ type: "damage_player", targetPlayerId, amount }));
+  ws?.send(JSON.stringify({ type: "trigger_draw_card" }));
+});
+
+// Kind toggle group (Gains Life / Loses Life / Takes Damage) is static —
+// unlike the target group, it doesn't depend on who's in the session.
+document.querySelectorAll("#kind-toggle-group .toggle-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    selectedKindValue = btn.dataset.value;
+    document.querySelectorAll("#kind-toggle-group .toggle-btn").forEach((b) => b.classList.toggle("active", b === btn));
+  });
+});
+
+// Amount wheel: a scroll-snapping vertical list, 0–20, defaulting to 1.
+const WHEEL_ITEM_HEIGHT = 44;
+const WHEEL_MAX = 20;
+
+function initWheel() {
+  const wheel = $("#wheel-amount");
+  let html = `<div class="wheel-pad"></div>`;
+  for (let i = 0; i <= WHEEL_MAX; i++) html += `<div class="wheel-item" data-value="${i}">${i}</div>`;
+  html += `<div class="wheel-pad"></div>`;
+  wheel.innerHTML = html;
+
+  wheel.querySelectorAll(".wheel-item").forEach((item) => {
+    item.addEventListener("click", () => item.scrollIntoView({ block: "center", behavior: "smooth" }));
+  });
+
+  let scrollTimeout;
+  wheel.addEventListener("scroll", () => {
+    clearTimeout(scrollTimeout);
+    scrollTimeout = setTimeout(() => {
+      const index = Math.round(wheel.scrollTop / WHEEL_ITEM_HEIGHT);
+      wheelAmount = Math.min(WHEEL_MAX, Math.max(0, index));
+      updateWheelSelection();
+    }, 80);
+  });
+
+  wheel.scrollTop = wheelAmount * WHEEL_ITEM_HEIGHT; // jump to default (1), no animation
+  updateWheelSelection();
+}
+
+function updateWheelSelection() {
+  document.querySelectorAll(".wheel-item").forEach((item) => {
+    item.classList.toggle("selected", Number(item.dataset.value) === wheelAmount);
+  });
+}
+
+initWheel();
+
+$("#btn-apply-life-event").addEventListener("click", () => {
+  ensureAudio();
+  if (wheelAmount <= 0) return; // 0 is a no-op amount
+  const scope = selectedTargetValue === "all" || selectedTargetValue === "opponents" ? selectedTargetValue : "single";
+  const payload = { type: "life_event", scope, kind: selectedKindValue, amount: wheelAmount };
+  if (scope === "single") payload.targetPlayerId = selectedTargetValue;
+  ws?.send(JSON.stringify(payload));
 });
