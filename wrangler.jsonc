@@ -1,9 +1,12 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "mtg-enhance-poc",
+  "name": "mtg-enhance",
   "main": "src/index.js",
   "compatibility_date": "2026-09-01",
 
+"routes": [
+  { "pattern": "enhance.mtg-oracle.com", "custom_domain": true }
+],
   // Durable Object: one GameSession instance per 4-character join code.
   "durable_objects": {
     "bindings": [
