@@ -14,6 +14,7 @@
   --b: #8a7a9b;
   --r: #d3654c;
   --g: #6ba873;
+  --c: #a9a392;
 
   --font-display: "Fraunces", Georgia, serif;
   --font-body: "Inter", system-ui, -apple-system, sans-serif;
@@ -138,7 +139,7 @@ body {
 
 .field { display: flex; flex-direction: column; gap: 6px; }
 
-.field span, .colors-field legend {
+.field span, .field > label, .colors-field legend {
   font-size: 0.85rem;
   color: var(--text-muted);
 }
@@ -154,7 +155,7 @@ body {
 
 .colors-field { border: none; padding: 0; margin: 0; }
 
-.color-toggles { display: flex; gap: 10px; margin-top: 4px; }
+.color-toggles { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
 
 .color-toggle {
   position: relative;
@@ -183,6 +184,7 @@ body {
 .color-toggle.color-b { background: color-mix(in srgb, var(--b) 35%, var(--panel)); }
 .color-toggle.color-r { background: color-mix(in srgb, var(--r) 35%, var(--panel)); }
 .color-toggle.color-g { background: color-mix(in srgb, var(--g) 35%, var(--panel)); }
+.color-toggle.color-c { background: color-mix(in srgb, var(--c) 35%, var(--panel)); }
 
 .color-toggle:has(input:checked) {
   border-color: var(--accent);
@@ -325,6 +327,7 @@ body {
 .color-dot.color-b { background: var(--b); }
 .color-dot.color-r { background: var(--r); }
 .color-dot.color-g { background: var(--g); }
+.color-dot.color-c { background: var(--c); }
 
 .opponent-life {
   font-family: var(--font-display);
@@ -460,3 +463,58 @@ body {
 
 .apply-btn { width: 100%; }
 
+
+/* ---------- Commander autocomplete ---------- */
+
+.combobox { position: relative; }
+
+/* The input is no longer a direct flex child of .field, so it needs an
+   explicit width to fill the row the way the name field does. */
+.combobox input[type="text"] { width: 100%; }
+
+.suggestions {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 232px;
+  overflow-y: auto;
+  background: var(--panel-raised);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+
+.suggestions li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 10px;
+  border-radius: 7px;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.suggestions li[aria-selected="true"],
+.suggestions li:hover {
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel-raised));
+}
+
+.suggestion-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.field-note {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.field-note.warn { color: var(--accent); }

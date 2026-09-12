@@ -52,10 +52,26 @@
         <input id="input-name" type="text" maxlength="20" required autocomplete="off" />
       </label>
 
-      <label class="field">
-        <span>Commander</span>
-        <input id="input-commander" type="text" maxlength="40" autocomplete="off" placeholder="e.g. Atraxa, Grand Unifier" />
-      </label>
+      <div class="field">
+        <label for="input-commander">Commander</label>
+        <div class="combobox">
+          <input
+            id="input-commander"
+            type="text"
+            maxlength="40"
+            autocomplete="off"
+            autocorrect="off"
+            spellcheck="false"
+            placeholder="e.g. Atraxa, Grand Unifier"
+            role="combobox"
+            aria-expanded="false"
+            aria-autocomplete="list"
+            aria-controls="commander-suggestions"
+          />
+          <ul id="commander-suggestions" class="suggestions" role="listbox" hidden></ul>
+        </div>
+        <p id="commander-note" class="field-note" hidden></p>
+      </div>
 
       <fieldset class="field colors-field">
         <legend>Color identity</legend>
@@ -65,6 +81,7 @@
           <label class="color-toggle color-b"><input type="checkbox" value="B" /><span>B</span></label>
           <label class="color-toggle color-r"><input type="checkbox" value="R" /><span>R</span></label>
           <label class="color-toggle color-g"><input type="checkbox" value="G" /><span>G</span></label>
+          <label class="color-toggle color-c" title="Colorless"><input type="checkbox" value="C" /><span>C</span></label>
         </div>
       </fieldset>
 

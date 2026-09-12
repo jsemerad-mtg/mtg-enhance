@@ -68,7 +68,7 @@ function playTaunt() {
 }
 
 // Ambient: a low sustained drone, per color identity (root note shifts by color).
-const AMBIENT_ROOT = { W: 261, U: 233, B: 196, R: 220, G: 246 };
+const AMBIENT_ROOT = { W: 261, U: 233, B: 196, R: 220, G: 246, C: 185 };
 let ambientOsc = null;
 let ambientGain = null;
 function playAmbientOn(colorIdentity) {
@@ -437,4 +437,201 @@ $("#btn-apply-life-event").addEventListener("click", () => {
   const payload = { type: "life_event", scope, kind: selectedKindValue, amount: wheelAmount };
   if (scope === "single") payload.targetPlayerId = selectedTargetValue;
   ws?.send(JSON.stringify(payload));
+});
+
+
+// ---------- color identity toggles ----------
+// Colorless is mutually exclusive with WUBRG: a commander either has colored
+// pips in its identity or it doesn't (Kozilek, Traxos, Karn). Checking C
+// clears the colors; checking any color clears C.
+const colorInputs = Array.from(document.querySelectorAll(".color-toggle input"));
+
+function setColorIdentity(colors) {
+  const wanted = new Set((colors || []).map((c) => c.toUpperCase()));
+  if (wanted.size === 0) wanted.add("C");
+  colorInputs.forEach((input) => {
+    input.checked = wanted.has(input.value);
+  });
+}
+
+colorInputs.forEach((input) => {
+  input.addEventListener("change", () => {
+    if (!input.checked) return;
+    if (input.value === "C") {
+      colorInputs.forEach((other) => {
+        if (other.value !== "C") other.checked = false;
+      });
+    } else {
+      const colorless = colorInputs.find((other) => other.value === "C");
+      if (colorless) colorless.checked = false;
+    }
+  });
+});
+
+// ---------- commander autocomplete (Scryfall, browser-side) ----------
+// Scryfall blocks Cloudflare Worker IPs, so these fetches must come from the
+// player's own browser — never proxy them through the Worker.
+const SCRYFALL_AUTOCOMPLETE = "https://api.scryfall.com/cards/autocomplete";
+const SCRYFALL_NAMED = "https://api.scryfall.com/cards/named";
+const SUGGEST_DEBOUNCE_MS = 250;
+const SUGGEST_MIN_CHARS = 2;
+
+const commanderInput = $("#input-commander");
+const suggestionList = $("#commander-suggestions");
+const commanderNote = $("#commander-note");
+
+let suggestDebounce = null;
+let suggestController = null;
+let lookupController = null;
+let suggestions = [];
+let activeSuggestion = -1;
+let lastResolvedName = null;
+
+function setNote(text, warn = false) {
+  if (!text) {
+    commanderNote.hidden = true;
+    commanderNote.textContent = "";
+    return;
+  }
+  commanderNote.textContent = text;
+  commanderNote.classList.toggle("warn", warn);
+  commanderNote.hidden = false;
+}
+
+function closeSuggestions() {
+  suggestions = [];
+  activeSuggestion = -1;
+  suggestionList.hidden = true;
+  suggestionList.innerHTML = "";
+  commanderInput.setAttribute("aria-expanded", "false");
+}
+
+function renderSuggestions() {
+  if (suggestions.length === 0) {
+    closeSuggestions();
+    return;
+  }
+  suggestionList.innerHTML = suggestions
+    .map(
+      (name, i) =>
+        `<li role="option" data-index="${i}" aria-selected="${i === activeSuggestion}">` +
+        `<span class="suggestion-name">${escapeHtml(name)}</span></li>`
+    )
+    .join("");
+  suggestionList.hidden = false;
+  commanderInput.setAttribute("aria-expanded", "true");
+}
+
+async function fetchSuggestions(query) {
+  suggestController?.abort();
+  suggestController = new AbortController();
+  try {
+    const res = await fetch(
+      `${SCRYFALL_AUTOCOMPLETE}?q=${encodeURIComponent(query)}&include_extras=false`,
+      { signal: suggestController.signal, headers: { Accept: "application/json" } }
+    );
+    if (!res.ok) return;
+    const data = await res.json();
+    suggestions = (data.data || []).slice(0, 8);
+    activeSuggestion = -1;
+    renderSuggestions();
+  } catch (err) {
+    if (err.name !== "AbortError") {
+      // Offline or Scryfall down — autocomplete is a convenience, not a
+      // requirement. The player can always type the name and set colors by hand.
+      closeSuggestions();
+    }
+  }
+}
+
+// Pulls the real card so we can auto-set color identity. `color_identity` is
+// always top-level, even on double-faced cards, so no card_faces handling needed.
+async function resolveCommander(name) {
+  lookupController?.abort();
+  lookupController = new AbortController();
+  setNote("Checking colors…");
+  try {
+    const res = await fetch(`${SCRYFALL_NAMED}?exact=${encodeURIComponent(name)}`, {
+      signal: lookupController.signal,
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      setNote("Couldn't find that card — set colors by hand.", true);
+      return;
+    }
+    const card = await res.json();
+    lastResolvedName = card.name;
+    commanderInput.value = card.name.slice(0, 40);
+    setColorIdentity(card.color_identity);
+
+    const identity = card.color_identity.length ? card.color_identity.join("") : "Colorless";
+    if (card.legalities?.commander !== "legal") {
+      setNote(`${identity} — not Commander-legal, but colors are set.`, true);
+    } else {
+      setNote(`${identity} — colors set from ${card.name}.`);
+    }
+  } catch (err) {
+    if (err.name !== "AbortError") setNote("Couldn't reach Scryfall — set colors by hand.", true);
+  }
+}
+
+function chooseSuggestion(index) {
+  const name = suggestions[index];
+  if (!name) return;
+  commanderInput.value = name.slice(0, 40);
+  closeSuggestions();
+  resolveCommander(name);
+}
+
+commanderInput.addEventListener("input", () => {
+  const query = commanderInput.value.trim();
+  if (query !== lastResolvedName) setNote("");
+  clearTimeout(suggestDebounce);
+  if (query.length < SUGGEST_MIN_CHARS) {
+    suggestController?.abort();
+    closeSuggestions();
+    return;
+  }
+  suggestDebounce = setTimeout(() => fetchSuggestions(query), SUGGEST_DEBOUNCE_MS);
+});
+
+commanderInput.addEventListener("keydown", (e) => {
+  if (suggestionList.hidden) {
+    // Enter on a typed-but-unpicked name still resolves its colors, rather
+    // than submitting the lobby form with no color identity set.
+    if (e.key === "Enter" && commanderInput.value.trim().length >= SUGGEST_MIN_CHARS) {
+      const typed = commanderInput.value.trim();
+      if (typed !== lastResolvedName) {
+        e.preventDefault();
+        resolveCommander(typed);
+      }
+    }
+    return;
+  }
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    activeSuggestion = (activeSuggestion + 1) % suggestions.length;
+    renderSuggestions();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    activeSuggestion = (activeSuggestion - 1 + suggestions.length) % suggestions.length;
+    renderSuggestions();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    chooseSuggestion(activeSuggestion >= 0 ? activeSuggestion : 0);
+  } else if (e.key === "Escape") {
+    closeSuggestions();
+  }
+});
+
+// mousedown, not click: the input's blur would tear the list down first.
+suggestionList.addEventListener("mousedown", (e) => {
+  const li = e.target.closest("li[data-index]");
+  if (!li) return;
+  e.preventDefault();
+  chooseSuggestion(Number(li.dataset.index));
+});
+
+commanderInput.addEventListener("blur", () => {
+  setTimeout(closeSuggestions, 120);
 });
