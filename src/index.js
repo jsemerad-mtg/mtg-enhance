@@ -1,4 +1,5 @@
 import { GameSession } from "./game-session.js";
+import { currentUser } from "./shared-session.js";
 export { GameSession };
 
 // Excludes visually ambiguous characters: 0/O, 1/I/L.
@@ -62,6 +63,15 @@ export default {
         );
       }
       return Response.json({ code, mode, pinRequired: pin !== null });
+    }
+
+    // Who is signed in, and what they own. The session comes from the shared
+    // mtg-oracle.com cookie — this app has no sign-in of its own.
+    if (url.pathname === "/api/me") {
+      const me = await currentUser(request, env);
+      return Response.json(me, {
+        headers: { "Cache-Control": "no-store" },
+      });
     }
 
     // Asked by the lobby before connecting, so a joiner is prompted for a PIN

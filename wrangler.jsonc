@@ -17,6 +17,18 @@
     { "tag": "v1", "new_sqlite_classes": ["GameSession"] }
   ],
 
+  // The SAME database MTG Oracle uses, so there is one users table and one set
+  // of entitlements across both apps rather than two that have to be kept in
+  // step. Cloudflare allows one D1 to be bound by several Workers.
+  // SESSION_SECRET must match Oracle's too: npx wrangler secret put SESSION_SECRET
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mtg_oracle_db",
+      "database_id": "fcc5877a-b92a-4e46-8aeb-f7b6e96882b6"
+    }
+  ],
+
   // Serves everything in public/ (index.html, client.js, style.css).
   // The Worker's fetch handler falls through to this binding for any
   // request that isn't /api/create or /ws/*.
