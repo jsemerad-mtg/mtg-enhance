@@ -22,6 +22,12 @@
 
 * { box-sizing: border-box; }
 
+/* Any rule that sets `display` outranks the UA's [hidden] rule, which has
+   twice silently left an element on screen — an invisible modal backdrop
+   eating every click, and a Pass turn button that never hid. One guard
+   instead of remembering it at each call site. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   min-height: 100%;
@@ -606,10 +612,6 @@ body {
 
 /* ---------- Modal ---------- */
 
-/* display:flex below beats the UA's [hidden] rule, so the hidden backdrop
-   would otherwise sit invisible over the whole page and eat every click. */
-.modal-backdrop[hidden] { display: none; }
-
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -762,3 +764,124 @@ body {
   margin: 4px auto 0;
   border-radius: 4.75% / 3.5%;
 }
+
+/* ---------- Rejoin banner ---------- */
+
+.rejoin-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  border: 1px solid var(--accent-dim);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+.rejoin-title { margin: 0; font-size: 0.92rem; font-weight: 600; }
+.rejoin-title span { font-family: var(--font-display); letter-spacing: 0.08em; }
+.rejoin-sub { margin: 2px 0 0; font-size: 0.78rem; color: var(--text-muted); }
+.rejoin-actions { display: flex; align-items: center; gap: 10px; }
+.rejoin-actions .btn { padding: 9px 16px; font-size: 0.88rem; }
+
+/* ---------- Mute ---------- */
+
+.header-icon.is-muted { color: var(--danger); border-color: var(--danger); }
+
+.muted-pip { font-size: 0.7rem; margin-left: 2px; opacity: 0.85; }
+
+/* ---------- Turn highlight and pass ---------- */
+
+.active-turn {
+  border-color: var(--accent) !important;
+  box-shadow: inset 0 0 0 1px var(--accent-dim);
+}
+
+.pass-turn-btn {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+}
+
+.opponents-head { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.btn-ghost-sm { font-size: 0.75rem; padding: 5px 11px; }
+
+.opponent-row { cursor: pointer; }
+.opponent-row:hover { border-color: var(--accent-dim); }
+
+/* ---------- Player menu ---------- */
+
+.player-menu { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.player-menu .btn { width: 100%; }
+.player-menu .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.menu-note { margin-top: 12px; font-size: 0.78rem; color: var(--text-muted); }
+
+/* ---------- Full sound board ---------- */
+
+.board-hint { font-size: 0.8rem; margin-bottom: 12px !important; }
+
+.sound-list { list-style: none; margin: 0 0 6px; padding: 0; }
+
+.sound-row { display: flex; align-items: stretch; gap: 8px; margin-bottom: 6px; }
+
+.sound-play {
+  flex: 1;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  padding: 10px 12px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.sound-play:hover { border-color: var(--accent-dim); }
+
+.sound-star {
+  width: 42px;
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+  color: var(--text-muted);
+  font-size: 1.05rem;
+  cursor: pointer;
+}
+.sound-star.starred { color: var(--accent); border-color: var(--accent-dim); }
+
+/* ---------- Turn order editor ---------- */
+
+.order-list { list-style: none; margin: 0; padding: 0; }
+
+.order-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  margin-bottom: 6px;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+}
+
+.order-index {
+  font-family: var(--font-display);
+  color: var(--accent);
+  width: 16px;
+  flex-shrink: 0;
+}
+.order-name { flex: 1; color: var(--text); font-size: 0.9rem; }
+.order-actions { display: flex; gap: 4px; }
+
+.order-actions button {
+  width: 30px;
+  height: 30px;
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  color: var(--text);
+  cursor: pointer;
+}
+.order-actions button:disabled { opacity: 0.3; cursor: default; }

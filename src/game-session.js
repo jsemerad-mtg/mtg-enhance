@@ -10,6 +10,7 @@ import { DurableObject } from "cloudflare:workers";
 // relevant player's own device in both modes.
 const COOLDOWNS_MS = {
   taunt: 8000,
+  poke: 30000,
   // Board Wipe is a shared, session-wide cooldown (see checkCooldown's
   // `key` argument below) rather than per-player — one board wipe at a
   // time makes more sense thematically than each player having their own.
@@ -41,7 +42,24 @@ function initialState(sessionId, mode = "colocated") {
     ambientActivePlayerId: null,
     cooldowns: {}, // "playerId:soundId" -> last-triggered timestamp (ms)
     status: "lobby", // lobby | active
+    // Turn order defaults to the order people sat down; the host can reorder.
+    turnOrder: [],
+    activePlayerIndex: 0,
+    turnStartedAt: Date.now(),
   };
+}
+
+// Poke is a "hurry up" nudge, so it's only allowed against the player who is
+// actually holding the table up: the active player, one minute into their turn.
+const POKE_MIN_TURN_MS = 60000;
+
+function activePlayerId(state) {
+  return state.turnOrder[state.activePlayerIndex] ?? null;
+}
+
+function canPoke(state, targetPlayerId) {
+  if (targetPlayerId !== activePlayerId(state)) return false;
+  return Date.now() - (state.turnStartedAt ?? 0) >= POKE_MIN_TURN_MS;
 }
 
 export class GameSession extends DurableObject {
@@ -54,6 +72,19 @@ export class GameSession extends DurableObject {
     ctx.blockConcurrencyWhile(async () => {
       this.sessionState = (await ctx.storage.get("state")) ?? null;
     });
+  }
+
+  // Sessions created before turn order and mute existed rehydrate without
+  // those fields; fill them in rather than throwing on the first message.
+  ensureShape() {
+    const state = this.sessionState;
+    if (!state) return;
+    if (!Array.isArray(state.turnOrder)) state.turnOrder = Object.keys(state.players || {});
+    if (typeof state.activePlayerIndex !== "number") state.activePlayerIndex = 0;
+    if (typeof state.turnStartedAt !== "number") state.turnStartedAt = Date.now();
+    for (const player of Object.values(state.players || {})) {
+      if (typeof player.muted !== "boolean") player.muted = false;
+    }
   }
 
   async persist() {
@@ -154,6 +185,7 @@ export class GameSession extends DurableObject {
     }
 
     const att = ws.deserializeAttachment() || {};
+    this.ensureShape();
 
     switch (msg.type) {
       case "join": {
@@ -178,8 +210,11 @@ export class GameSession extends DurableObject {
             lifeTotal: 40,
             isHost: isFirstPlayer,
             connected: true,
+            muted: false,
           };
           if (isFirstPlayer) this.sessionState.hostId = playerId;
+          this.sessionState.turnOrder.push(playerId);
+          if (isFirstPlayer) this.sessionState.turnStartedAt = Date.now();
         }
 
         this.sessionState.status = "active";
@@ -233,6 +268,13 @@ export class GameSession extends DurableObject {
         await this.persist();
 
         this.announceActivity(att.playerId, "life_event");
+
+        // Whoever pressed Apply gets a confirmation sound even when they
+        // aren't one of the targets — otherwise dealing damage to three
+        // opponents is completely silent on your own device.
+        if (!targets.some((t) => t.id === att.playerId)) {
+          this.sendToPlayer(att.playerId, { type: "play_sound", soundId, fromPlayerId: att.playerId });
+        }
 
         for (const target of targets) {
           this.broadcast({ type: "life_update", playerId: target.id, lifeTotal: target.lifeTotal });
@@ -312,6 +354,112 @@ export class GameSession extends DurableObject {
         break;
       }
 
+      case "trigger_targeted": {
+        // Taunt and poke aimed at one player: it plays on their device and on
+        // the sender's, so both ends of the exchange hear it.
+        const target = this.sessionState.players[msg.targetPlayerId];
+        if (!target) return;
+        const soundId = msg.soundId === "poke" ? "poke" : "taunt";
+
+        if (soundId === "poke" && !canPoke(this.sessionState, target.id)) {
+          ws.send(JSON.stringify({
+            type: "error",
+            message: "Poke is only available once the active player has been on their turn a minute.",
+          }));
+          return;
+        }
+
+        const result = checkCooldown(this.sessionState, soundId, `${att.playerId}:${soundId}:${target.id}`);
+        if (!result.ok) {
+          ws.send(JSON.stringify({ type: "cooldown_rejected", soundId, remainingMs: result.remainingMs }));
+          return;
+        }
+        await this.persist();
+
+        const payload = { type: "play_sound", soundId, fromPlayerId: att.playerId, targetPlayerId: target.id };
+        this.sendToPlayer(target.id, payload);
+        if (target.id !== att.playerId) this.sendToPlayer(att.playerId, payload);
+        this.announceActivity(att.playerId, soundId);
+        break;
+      }
+
+      case "trigger_library_sound": {
+        // Sounds chosen from the full board. Table-wide, like the board wipe:
+        // one device in a local game, every device in a remote one.
+        const soundId = String(msg.soundId || "").slice(0, 40);
+        if (!soundId) return;
+        const result = checkCooldown(this.sessionState, soundId, `${att.playerId}:${soundId}`);
+        if (!result.ok) {
+          ws.send(JSON.stringify({ type: "cooldown_rejected", soundId, remainingMs: result.remainingMs }));
+          return;
+        }
+        this.playShared({ soundId, fromPlayerId: att.playerId });
+        this.announceActivity(att.playerId, "library");
+        break;
+      }
+
+      case "set_muted": {
+        const player = this.sessionState.players[att.playerId];
+        if (!player) return;
+        // Muting is local to the device, but it's shared so the rest of the
+        // table can see who won't hear their sound effects.
+        player.muted = !!msg.muted;
+        await this.persist();
+        this.broadcast({ type: "state_sync", state: this.sessionState });
+        break;
+      }
+
+      case "pass_turn": {
+        const order = this.sessionState.turnOrder.filter((id) => this.sessionState.players[id]);
+        if (order.length === 0) return;
+        // Only the active player may pass, so two people tapping at once
+        // can't skip someone.
+        if (activePlayerId(this.sessionState) !== att.playerId) return;
+
+        const fromId = att.playerId;
+        this.sessionState.turnOrder = order;
+        this.sessionState.activePlayerIndex =
+          (order.indexOf(fromId) + 1) % order.length;
+        this.sessionState.turnStartedAt = Date.now();
+        await this.persist();
+
+        const toId = activePlayerId(this.sessionState);
+        this.broadcast({
+          type: "turn_changed",
+          activePlayerId: toId,
+          turnStartedAt: this.sessionState.turnStartedAt,
+        });
+        // The handoff is heard by the two people it concerns, not the table.
+        const payload = { type: "play_sound", soundId: "pass_turn", fromPlayerId: fromId };
+        this.sendToPlayer(fromId, payload);
+        if (toId && toId !== fromId) this.sendToPlayer(toId, payload);
+        this.announceActivity(fromId, "pass_turn");
+        break;
+      }
+
+      case "set_turn_order": {
+        if (att.playerId !== this.sessionState.hostId) return;
+        if (!Array.isArray(msg.order)) return;
+        // Keep only real players, then append anyone the client left out, so
+        // a stale client can never drop someone from the rotation.
+        const seen = new Set();
+        const order = msg.order.filter((id) => {
+          if (!this.sessionState.players[id] || seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        });
+        for (const id of Object.keys(this.sessionState.players)) {
+          if (!seen.has(id)) order.push(id);
+        }
+        const stayActive = activePlayerId(this.sessionState);
+        this.sessionState.turnOrder = order;
+        const idx = order.indexOf(stayActive);
+        this.sessionState.activePlayerIndex = idx === -1 ? 0 : idx;
+        await this.persist();
+        this.broadcast({ type: "state_sync", state: this.sessionState });
+        break;
+      }
+
       default:
         ws.send(JSON.stringify({ type: "error", message: `Unknown message type: ${msg.type}` }));
     }
@@ -322,6 +470,8 @@ export class GameSession extends DurableObject {
     const player = att?.playerId ? this.sessionState?.players[att.playerId] : null;
     if (player) {
       player.connected = false;
+      // Their seat, life total, commander and place in the rotation all stay —
+      // closing a browser is a disconnect, not leaving the table.
       await this.persist();
       this.broadcast({ type: "state_sync", state: this.sessionState });
     }

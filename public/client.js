@@ -98,7 +98,8 @@ function stopAmbient() {
 let ws = null;
 let code = null;
 let selfId = null;
-let session = { players: {}, hostId: null, ambientActivePlayerId: null, mode: "colocated" };
+let session = { players: {}, hostId: null, ambientActivePlayerId: null, mode: "colocated",
+                turnOrder: [], activePlayerId: null, turnStartedAt: Date.now() };
 let ambientIsMine = false;
 const cooldownTimers = {}; // soundId -> interval handle
 
@@ -132,6 +133,8 @@ function render() {
   $("#self-name").textContent = self.displayName;
   $("#self-life").textContent = self.lifeTotal;
 
+  $("#self-panel").classList.toggle("active-turn", session.activePlayerId === selfId);
+
   const selfCommander = $("#self-commander");
   selfCommander.textContent = self.commanderName || "";
   selfCommander.hidden = !self.commanderName;
@@ -150,12 +153,14 @@ function render() {
     .map((p) => {
       const dots = (p.colorIdentity || []).map((c) => `<span class="color-dot color-${c.toLowerCase()}"></span>`).join("");
       const dead = p.lifeTotal <= 0 ? "dead" : "";
+      const active = p.id === session.activePlayerId ? " active-turn" : "";
+      const mutedIcon = p.muted ? '<span class="muted-pip" title="Sounds muted">\u{1F507}</span>' : "";
       const commander = p.commanderName
         ? `<span class="opponent-commander" data-commander="${escapeHtml(p.commanderName)}">${escapeHtml(p.commanderName)}</span>`
         : "";
-      return `<div class="opponent-row" data-player-id="${escapeHtml(p.id)}">
+      return `<div class="opponent-row${active}" data-player-id="${escapeHtml(p.id)}" role="button" tabindex="0">
         <div class="opponent-top">
-          <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span> ${dots}</span>
+          <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span> ${dots}${mutedIcon}</span>
           <span class="opponent-life">${p.lifeTotal}</span>
         </div>
         ${commander}
@@ -169,7 +174,8 @@ function render() {
   renderTargetToggles(opponents);
 
   ambientIsMine = session.ambientActivePlayerId === selfId;
-  $("#btn-ambient").classList.toggle("active", !!session.ambientActivePlayerId);
+  renderSoundboard();
+  renderTurnControls();
 }
 
 function renderTargetToggles(opponents) {
@@ -256,6 +262,7 @@ function connectAndJoin(joinCode, lobbyInfo) {
           colorIdentity: lobbyInfo.colorIdentity ?? stored.colorIdentity,
         });
         showScreen("game");
+        rememberGame(code);
         requestWakeLock();
         break;
       }
@@ -264,6 +271,9 @@ function connectAndJoin(joinCode, lobbyInfo) {
         session.hostId = msg.state.hostId;
         session.ambientActivePlayerId = msg.state.ambientActivePlayerId;
         session.mode = msg.state.mode || "colocated";
+        session.turnOrder = msg.state.turnOrder || [];
+        session.turnStartedAt = msg.state.turnStartedAt || Date.now();
+        session.activePlayerId = session.turnOrder[msg.state.activePlayerIndex ?? 0] ?? null;
         render();
         break;
       }
@@ -274,12 +284,19 @@ function connectAndJoin(joinCode, lobbyInfo) {
         }
         break;
       }
+      case "turn_changed": {
+        session.activePlayerId = msg.activePlayerId;
+        session.turnStartedAt = msg.turnStartedAt;
+        render();
+        break;
+      }
       case "ambient_changed": {
         session.ambientActivePlayerId = msg.playerId;
         render();
         break;
       }
       case "play_sound": {
+        if (muted) break; // sound_activity still lights the UI up
         if (msg.soundId === "broadcast") playBroadcast();
         if (msg.soundId === "damage") playDamage();
         if (msg.soundId === "life_loss") playLifeLoss();
@@ -288,6 +305,9 @@ function connectAndJoin(joinCode, lobbyInfo) {
         if (msg.soundId === "draw_card") playDrawCard();
         if (msg.soundId === "ambient_on") playAmbientOn(msg.colorIdentity);
         if (msg.soundId === "ambient_off") stopAmbient();
+        if (msg.soundId === "poke") playPoke();
+        if (msg.soundId === "pass_turn") playPassTurn();
+        if (LIBRARY_BY_ID[msg.soundId]) playLibrarySound(msg.soundId);
         break;
       }
       case "sound_activity": {
@@ -324,16 +344,13 @@ function connectAndJoin(joinCode, lobbyInfo) {
   });
 }
 
-const COOLDOWN_BUTTONS = {
-  broadcast: { btn: "#btn-broadcast", sub: "#broadcast-sub" },
-  taunt: { btn: "#btn-taunt", sub: "#taunt-sub" },
-};
-
 function showCooldown(soundId, remainingMs) {
-  const refs = COOLDOWN_BUTTONS[soundId];
-  if (!refs) return;
-  const btn = $(refs.btn);
-  const sub = $(refs.sub);
+  // Soundboard slots are rendered from JS now, so look the button up by the
+  // sound it currently holds rather than a fixed element id.
+  const btn = document.querySelector(`[data-sound-id="${CSS.escape(soundId)}"]`);
+  if (!btn) return;
+  const sub = btn.querySelector(".icon-sub");
+  if (!sub) return;
   btn.classList.add("on-cooldown");
   clearInterval(cooldownTimers[soundId]);
   const end = Date.now() + remainingMs;
@@ -418,26 +435,6 @@ document.querySelectorAll(".life-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     sendMessage({ type: "life_delta", delta: Number(btn.dataset.delta) });
   });
-});
-
-$("#btn-broadcast").addEventListener("click", () => {
-  ensureAudio();
-  sendMessage({ type: "trigger_broadcast" });
-});
-
-$("#btn-ambient").addEventListener("click", () => {
-  ensureAudio();
-  sendMessage({ type: "trigger_ambient", on: !ambientIsMine });
-});
-
-$("#btn-taunt").addEventListener("click", () => {
-  ensureAudio();
-  sendMessage({ type: "trigger_taunt" });
-});
-
-$("#btn-draw").addEventListener("click", () => {
-  ensureAudio();
-  sendMessage({ type: "trigger_draw_card" });
 });
 
 // Kind toggle group (Gains Life / Loses Life / Takes Damage) is static —
@@ -839,7 +836,9 @@ const modalBody = $("#modal-body");
 
 function openModal(title, bodyHtml) {
   modalTitle.textContent = title;
+  modalBody.className = "modal-body"; // drop any per-modal modifier
   modalBody.innerHTML = bodyHtml;
+  modalBody.scrollTop = 0;
   modalBackdrop.hidden = false;
   $("#modal-close").focus();
 }
@@ -1036,3 +1035,374 @@ document.addEventListener("dblclick", (e) => {
   e.preventDefault();
   openCardModal(el.dataset.commander);
 });
+
+// ---------- sound library ----------
+// Placeholder tones for now — the real audio lands in R2 later. Grouped the
+// way claude/sound-ability-map.md groups them: universal table events, then
+// per-colour mechanics, so a player only sees sounds their identity can use.
+const SOUND_LIBRARY = {
+  universal: [
+    ["combat_damage", "Combat Damage"], ["commander_damage", "Commander Damage"],
+    ["attack", "Attack!"], ["block", "Blockers"], ["land_drop", "Land Drop"],
+    ["counter_stack", "In Response"], ["shuffle", "Shuffle"], ["eliminated", "Eliminated"],
+  ],
+  W: [
+    ["w_wrath", "Wrath"], ["w_lifegain", "Gain Life"], ["w_exile", "Exile"],
+    ["w_tokens", "Token Swarm"], ["w_protect", "Protection"], ["w_anthem", "Anthem"],
+  ],
+  U: [
+    ["u_counter", "Counterspell"], ["u_draw", "Draw Extra"], ["u_scry", "Scry"],
+    ["u_bounce", "Bounce"], ["u_mill", "Mill"], ["u_steal", "Steal"], ["u_extra_turn", "Extra Turn"],
+  ],
+  B: [
+    ["b_sacrifice", "Sacrifice"], ["b_destroy", "Destroy"], ["b_drain", "Drain"],
+    ["b_reanimate", "Reanimate"], ["b_discard", "Discard"], ["b_tutor", "Tutor"],
+    ["b_surveil", "Surveil"],
+  ],
+  R: [
+    ["r_burn", "Burn"], ["r_impulse", "Impulse Draw"], ["r_haste", "Haste"],
+    ["r_treasure", "Treasure"], ["r_goad", "Goad"], ["r_extra_combat", "Extra Combat"],
+  ],
+  G: [
+    ["g_ramp", "Ramp"], ["g_counters", "+1/+1 Counters"], ["g_fight", "Fight"],
+    ["g_trample", "Trample"], ["g_bigmana", "Big Mana"], ["g_stampede", "Stampede"],
+  ],
+  C: [
+    ["c_equip", "Equip"], ["c_manarock", "Mana Rock"], ["c_eldrazi", "Eldrazi"],
+    ["c_annihilator", "Annihilator"], ["c_artifact_token", "Artifact Token"],
+  ],
+};
+
+const LIBRARY_BY_ID = {};
+for (const [group, rows] of Object.entries(SOUND_LIBRARY)) {
+  for (const [id, label] of rows) LIBRARY_BY_ID[id] = { id, label, group };
+}
+
+// Deterministic placeholder: the same sound id always produces the same tone,
+// so they're at least distinguishable while the real audio is authored.
+function playLibrarySound(soundId) {
+  let hash = 0;
+  for (let i = 0; i < soundId.length; i++) hash = (hash * 31 + soundId.charCodeAt(i)) >>> 0;
+  const root = 180 + (hash % 520);
+  const types = ["sine", "triangle", "square", "sawtooth"];
+  tone({ freq: root, duration: 0.22, type: types[hash % 4], gain: 0.16 });
+  tone({ freq: root * (hash % 2 ? 1.5 : 0.75), duration: 0.26, type: "sine", gain: 0.13, delay: 0.1 });
+}
+
+function playPoke() {
+  tone({ freq: 1050, duration: 0.07, type: "square", gain: 0.2 });
+  tone({ freq: 1050, duration: 0.07, type: "square", gain: 0.2, delay: 0.14 });
+}
+
+function playPassTurn() {
+  tone({ freq: 392, duration: 0.2, type: "triangle", gain: 0.16 });
+  tone({ freq: 523, duration: 0.3, type: "triangle", gain: 0.16, delay: 0.12 });
+}
+
+// ---------- mute ----------
+let muted = false;
+try { muted = localStorage.getItem("mtge:muted") === "1"; } catch { muted = false; }
+
+const SPEAKER_ON = "\u{1F50A}";
+const SPEAKER_OFF = "\u{1F507}";
+
+function renderMuteButton() {
+  const btn = $("#btn-mute");
+  btn.textContent = muted ? SPEAKER_OFF : SPEAKER_ON;
+  btn.setAttribute("aria-pressed", String(muted));
+  btn.setAttribute("aria-label", muted ? "Unmute all sounds" : "Mute all sounds");
+  btn.classList.toggle("is-muted", muted);
+}
+
+$("#btn-mute").addEventListener("click", () => {
+  muted = !muted;
+  try { localStorage.setItem("mtge:muted", muted ? "1" : "0"); } catch {}
+  if (muted) stopAmbient();
+  renderMuteButton();
+  // Shared so the rest of the table can see who won't hear their sounds.
+  sendMessage({ type: "set_muted", muted });
+});
+renderMuteButton();
+
+// ---------- soundboard slots ----------
+// Three hotkey slots plus More. Starring a sound on the full board swaps it
+// into a slot; the defaults are simply the three sounds starred to begin with.
+const ICONS = {
+  broadcast: `<path d="M12 3v4M9 7c0 2 1.3 3.2 3 3.2S15 9 15 7" /><path d="M7 10c-1.8 1-2.5 3-2 5 .6 2.2 2.8 3.5 5 3.2.6 1.4 2 2.3 3.5 2.1 1.8-.2 3.1-1.8 3-3.6 1.9-.2 3.3-1.9 3.1-3.8-.2-1.7-1.6-3-3.3-3.1.3-2-1-3.9-3-4.3-2.2-.5-4.4.9-4.8 3.1-.2 1-.1 2 .3 2.9" />`,
+  ambient: `<path d="M9 18V5l11-2v13" /><circle cx="6.5" cy="18" r="2.5" /><circle cx="17.5" cy="16" r="2.5" />`,
+  draw_card: `<rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6M9 16h3" />`,
+  library: `<circle cx="12" cy="12" r="9" /><path d="M8 12h8M12 8v8" />`,
+  more: `<circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" />`,
+};
+
+const BUILTINS = {
+  broadcast: { label: "Wipe", icon: "broadcast", message: () => ({ type: "trigger_broadcast" }) },
+  ambient: { label: "Music", icon: "ambient", message: () => ({ type: "trigger_ambient", on: !ambientIsMine }) },
+  draw_card: { label: "Draw", icon: "draw_card", message: () => ({ type: "trigger_draw_card" }) },
+};
+
+const DEFAULT_HOTKEYS = ["broadcast", "ambient", "draw_card"];
+const HOTKEY_SLOTS = 3;
+
+function loadHotkeys() {
+  try {
+    const raw = JSON.parse(localStorage.getItem("mtge:hotkeys") || "null");
+    if (Array.isArray(raw) && raw.length === HOTKEY_SLOTS) return raw;
+  } catch {}
+  return [...DEFAULT_HOTKEYS];
+}
+let hotkeys = loadHotkeys();
+
+function saveHotkeys() {
+  try { localStorage.setItem("mtge:hotkeys", JSON.stringify(hotkeys)); } catch {}
+}
+
+function soundMeta(id) {
+  if (BUILTINS[id]) return BUILTINS[id];
+  const lib = LIBRARY_BY_ID[id];
+  return lib ? { label: lib.label, icon: "library", library: true } : null;
+}
+
+function iconButton({ soundId, label, icon, extraClass = "", sub = "" }) {
+  return `<button class="icon-btn ${extraClass}" type="button" data-sound-id="${escapeHtml(soundId)}" aria-label="${escapeHtml(label)}">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${ICONS[icon]}</svg>
+    <span class="icon-caption">${escapeHtml(label)}</span>
+    <span class="icon-sub">${sub}</span>
+  </button>`;
+}
+
+function renderSoundboard() {
+  const board = $("#soundboard");
+  if (!board) return;
+  const slots = hotkeys.map((id) => {
+    const meta = soundMeta(id);
+    if (!meta) return "";
+    const activeClass = id === "ambient" && session.ambientActivePlayerId ? "active" : "";
+    return iconButton({ soundId: id, label: meta.label, icon: meta.icon, extraClass: activeClass });
+  });
+  board.innerHTML =
+    slots.join("") +
+    `<button class="icon-btn" type="button" id="btn-more" aria-label="All sounds">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${ICONS.more}</svg>
+      <span class="icon-caption">More</span>
+      <span class="icon-sub"></span>
+    </button>`;
+}
+
+$("#soundboard").addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  ensureAudio();
+  if (btn.id === "btn-more") return openSoundBoardModal();
+  const id = btn.dataset.soundId;
+  const meta = soundMeta(id);
+  if (!meta) return;
+  sendMessage(meta.library ? { type: "trigger_library_sound", soundId: id } : meta.message());
+});
+
+// ---------- full sound board ----------
+// Universal sounds plus whatever this player's colour identity unlocks, so a
+// mono-white commander isn't scrolling past mill and burn to find Wrath.
+const COLOR_NAMES = { W: "White", U: "Blue", B: "Black", R: "Red", G: "Green", C: "Colorless" };
+
+function myIdentityGroups() {
+  const self = session.players[selfId];
+  const identity = canonicalIdentity((self?.colorIdentity || []).join(""));
+  if (identity === "") return ["C"];
+  return identity.split("");
+}
+
+function soundRow(id, label) {
+  const starred = hotkeys.includes(id);
+  return `<li class="sound-row">
+    <button class="sound-play" type="button" data-play="${escapeHtml(id)}">${escapeHtml(label)}</button>
+    <button class="sound-star${starred ? " starred" : ""}" type="button" data-star="${escapeHtml(id)}"
+      aria-label="${starred ? "Remove from" : "Add to"} hotkeys">${starred ? "★" : "☆"}</button>
+  </li>`;
+}
+
+function soundBoardHtml() {
+  const sections = [];
+  const builtinRows = Object.entries(BUILTINS).map(([id, meta]) => soundRow(id, meta.label));
+  sections.push(`<h3>Board</h3><ul class="sound-list">${builtinRows.join("")}</ul>`);
+  sections.push(
+    `<h3>Universal</h3><ul class="sound-list">${SOUND_LIBRARY.universal.map(([id, l]) => soundRow(id, l)).join("")}</ul>`
+  );
+  for (const color of myIdentityGroups()) {
+    const rows = SOUND_LIBRARY[color] || [];
+    if (rows.length === 0) continue;
+    sections.push(
+      `<h3>${COLOR_NAMES[color]}</h3><ul class="sound-list">${rows.map(([id, l]) => soundRow(id, l)).join("")}</ul>`
+    );
+  }
+  return `<p class="board-hint">Tap a name to play it. Star up to ${HOTKEY_SLOTS} to keep them on the main screen.</p>
+    <p id="board-warning" class="field-note error" hidden></p>${sections.join("")}`;
+}
+
+function openSoundBoardModal() {
+  openModal("Sounds", soundBoardHtml());
+  modalBody.classList.add("sound-board");
+}
+
+modalBody.addEventListener("click", (e) => {
+  const play = e.target.closest("[data-play]");
+  if (play) {
+    ensureAudio();
+    const id = play.dataset.play;
+    const meta = soundMeta(id);
+    sendMessage(meta?.library ? { type: "trigger_library_sound", soundId: id } : meta.message());
+    return;
+  }
+
+  const star = e.target.closest("[data-star]");
+  if (star) {
+    const id = star.dataset.star;
+    const warning = $("#board-warning");
+    if (hotkeys.includes(id)) {
+      // Slots are never left empty — removing one falls back to whichever
+      // default isn't already in use.
+      const fallback = DEFAULT_HOTKEYS.find((d) => !hotkeys.includes(d)) || "draw_card";
+      hotkeys = hotkeys.map((h) => (h === id ? fallback : h));
+    } else {
+      const replaceable = hotkeys.findIndex((h) => !DEFAULT_HOTKEYS.includes(h));
+      if (replaceable === -1) {
+        // All three slots hold defaults: take the last one rather than
+        // silently refusing.
+        hotkeys[HOTKEY_SLOTS - 1] = id;
+      } else {
+        hotkeys[replaceable] = id;
+      }
+    }
+    saveHotkeys();
+    renderSoundboard();
+    const scroll = modalBody.scrollTop;
+    modalBody.innerHTML = soundBoardHtml();
+    modalBody.scrollTop = scroll;
+    if (warning) warning.hidden = true;
+  }
+});
+
+// ---------- turn controls ----------
+function renderTurnControls() {
+  const isMyTurn = session.activePlayerId === selfId;
+  $("#btn-pass-turn").hidden = !isMyTurn;
+  const self = session.players[selfId];
+  $("#btn-turn-order").hidden = !self?.isHost;
+}
+
+$("#btn-pass-turn").addEventListener("click", () => {
+  ensureAudio();
+  sendMessage({ type: "pass_turn" });
+});
+
+// ---------- opponent menu ----------
+// One tap on a player opens the actions aimed at them, rather than hiding
+// taunt and poke behind a long-press nobody discovers.
+let menuTargetId = null;
+
+function pokeAvailable(targetId) {
+  if (targetId !== session.activePlayerId) return false;
+  return Date.now() - (session.turnStartedAt || 0) >= 60000;
+}
+
+function openPlayerMenu(playerId) {
+  const player = session.players[playerId];
+  if (!player) return;
+  menuTargetId = playerId;
+  const canPoke = pokeAvailable(playerId);
+  const pokeNote = canPoke
+    ? ""
+    : `<p class="menu-note">Poke unlocks once it's their turn and they've had it a minute.</p>`;
+  openModal(
+    player.displayName,
+    `<div class="player-menu">
+      <button class="btn btn-secondary" type="button" data-menu="taunt">Taunt</button>
+      <button class="btn btn-secondary" type="button" data-menu="poke"${canPoke ? "" : " disabled"}>Poke</button>
+      <button class="btn btn-secondary" type="button" data-menu="view"${player.commanderName ? "" : " disabled"}>View commander</button>
+      <button class="btn btn-secondary" type="button" data-menu="close">Close</button>
+    </div>${pokeNote}`
+  );
+}
+
+modalBody.addEventListener("click", (e) => {
+  const action = e.target.closest("[data-menu]")?.dataset.menu;
+  if (!action) return;
+  const player = session.players[menuTargetId];
+  if (action === "close" || !player) return closeModal();
+  if (action === "view") return openCardModal(player.commanderName);
+  ensureAudio();
+  sendMessage({ type: "trigger_targeted", soundId: action, targetPlayerId: menuTargetId });
+  closeModal();
+});
+
+// The commander name fills much of the row, so excluding it from the tap
+// target left half of each row inert. Single tap anywhere opens the menu —
+// which carries View anyway; a double-click still jumps straight to the card.
+$("#opponents").addEventListener("click", (e) => {
+  const row = e.target.closest(".opponent-row");
+  if (row) openPlayerMenu(row.dataset.playerId);
+});
+
+// ---------- turn order (host) ----------
+function turnOrderHtml() {
+  const rows = session.turnOrder
+    .filter((id) => session.players[id])
+    .map((id, i, arr) => {
+      const p = session.players[id];
+      return `<li class="order-row">
+        <span class="order-index">${i + 1}</span>
+        <span class="order-name">${escapeHtml(p.displayName)}${id === selfId ? " (you)" : ""}</span>
+        <span class="order-actions">
+          <button type="button" data-move="up" data-id="${escapeHtml(id)}" ${i === 0 ? "disabled" : ""} aria-label="Move up">↑</button>
+          <button type="button" data-move="down" data-id="${escapeHtml(id)}" ${i === arr.length - 1 ? "disabled" : ""} aria-label="Move down">↓</button>
+        </span>
+      </li>`;
+    });
+  return `<p class="board-hint">Turn order follows the order people sat down. Reorder it here.</p>
+    <ul class="order-list">${rows.join("")}</ul>`;
+}
+
+$("#btn-turn-order").addEventListener("click", () => openModal("Turn order", turnOrderHtml()));
+
+modalBody.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-move]");
+  if (!btn) return;
+  const order = session.turnOrder.filter((id) => session.players[id]);
+  const from = order.indexOf(btn.dataset.id);
+  const to = btn.dataset.move === "up" ? from - 1 : from + 1;
+  if (from === -1 || to < 0 || to >= order.length) return;
+  [order[from], order[to]] = [order[to], order[from]];
+  session.turnOrder = order;
+  sendMessage({ type: "set_turn_order", order });
+  modalBody.innerHTML = turnOrderHtml();
+});
+
+// ---------- rejoin after a browser close ----------
+// The Durable Object keeps life totals, commanders and turn position, and the
+// player id lives in localStorage — but nothing recorded WHICH game you were
+// in, so closing the tab stranded you at the home screen.
+const LAST_GAME_KEY = "mtge:last-game";
+
+function rememberGame(joinCode) {
+  try { localStorage.setItem(LAST_GAME_KEY, JSON.stringify({ code: joinCode, at: Date.now() })); } catch {}
+}
+
+function showRejoinBanner() {
+  let last = null;
+  try { last = JSON.parse(localStorage.getItem(LAST_GAME_KEY) || "null"); } catch {}
+  // A day is long enough to cover finishing a game after a break, short
+  // enough not to offer a table that broke up last week.
+  if (!last?.code || Date.now() - last.at > 24 * 60 * 60 * 1000) return;
+  if (!loadStored(last.code)?.playerId) return;
+  $("#rejoin-code").textContent = last.code;
+  $("#rejoin-banner").hidden = false;
+  $("#btn-rejoin").onclick = () => {
+    ensureAudio();
+    enterLobby(last.code);
+  };
+  $("#btn-forget-game").onclick = () => {
+    try { localStorage.removeItem(LAST_GAME_KEY); } catch {}
+    $("#rejoin-banner").hidden = true;
+  };
+}
+showRejoinBanner();
