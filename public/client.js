@@ -136,7 +136,8 @@ function render() {
   $("#self-life").textContent = self.lifeTotal;
 
   $("#self-panel").classList.toggle("active-turn", session.activePlayerId === selfId);
-  $("#self-panel").classList.toggle("lethal-row", isLethal(self));
+  $("#self-panel").classList.toggle("lethal-row", !self.eliminated && isLethal(self));
+  $("#self-panel").classList.toggle("eliminated-row", !!self.eliminated);
 
   const selfCommander = $("#self-commander");
   selfCommander.textContent = self.commanderName || "";
@@ -152,16 +153,17 @@ function render() {
   $("#opponents").innerHTML = opponents
     .map((p) => {
       const dots = (p.colorIdentity || []).map((c) => `<span class="color-dot color-${c.toLowerCase()}"></span>`).join("");
-      const dead = p.lifeTotal <= 0 ? "dead" : "";
+      const dead = p.eliminated || p.lifeTotal <= 0 ? "dead" : "";
       const active = p.id === session.activePlayerId ? " active-turn" : "";
-      const doomed = isLethal(p) ? " lethal-row" : "";
+      const doomed = p.eliminated ? " eliminated-row" : isLethal(p) ? " lethal-row" : "";
+      const outTag = p.eliminated ? '<span class="out-tag">OUT</span>' : "";
       const mutedIcon = p.muted ? '<span class="muted-pip" title="Sounds muted">\u{1F507}</span>' : "";
       const commander = p.commanderName
         ? `<span class="opponent-commander" data-commander="${escapeHtml(p.commanderName)}">${escapeHtml(p.commanderName)}</span>`
         : "";
       return `<div class="opponent-row${active}${doomed}" data-player-id="${escapeHtml(p.id)}" role="button" tabindex="0">
         <div class="opponent-top">
-          <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span> ${dots}${mutedIcon}</span>
+          <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span> ${dots}${mutedIcon}${outTag}</span>
           <span class="opponent-life">${p.lifeTotal}</span>
         </div>
         ${commander}
@@ -1423,14 +1425,16 @@ $("#btn-pass-turn").addEventListener("click", () => {
   // would end it, and you can just as easily be out at 40 life by decking or
   // conceding. So the app never decides: it offers the skip and lets whoever
   // is passing say which is true right now.
+  // Eliminated players are stepped over by the server, so the manual offer is
+  // only for the ambiguous case: down but not declared out.
   const skipOption =
-    next && isLethal(next) && afterNext && afterNext.id !== next.id
+    next && !next.eliminated && isLethal(next) && afterNext && afterNext.id !== next.id
       ? `<button class="btn btn-secondary" type="button" data-confirm="skip"
            data-to="${escapeHtml(afterNext.id)}">Skip to ${escapeHtml(afterNext.displayName)}</button>`
       : "";
 
   const note =
-    next && isLethal(next)
+    next && !next.eliminated && isLethal(next)
       ? `<p class="menu-note">${escapeHtml(next.displayName)} is out of life — skip them only if they're actually out of the game.</p>`
       : "";
 
@@ -1454,6 +1458,7 @@ function nextPlayer(fromId = selfId, skipLethal = false) {
   for (let step = 1; step <= order.length; step++) {
     const candidate = session.players[order[(at + step) % order.length]];
     if (!candidate) continue;
+    if (candidate.eliminated && candidate.id !== selfId) continue;
     if (!skipLethal || !isLethal(candidate) || candidate.id === selfId) return candidate;
   }
   return session.players[order[(at + 1) % order.length]] ?? null;
@@ -1508,6 +1513,9 @@ function openPlayerMenu(playerId) {
       <button class="btn btn-secondary" type="button" data-menu="taunt">Taunt</button>
       <button class="btn btn-secondary" type="button" data-menu="poke"${canPoke ? "" : " disabled"}>Poke</button>
       <button class="btn btn-secondary" type="button" data-menu="view"${player.commanderName ? "" : " disabled"}>View commander</button>
+      <button class="btn btn-secondary" type="button" data-menu="eliminate">
+        ${player.eliminated ? "Bring back in" : "Mark eliminated"}
+      </button>
       <button class="btn btn-secondary" type="button" data-menu="close">Close</button>
     </div>${pokeNote}`
   );
@@ -1520,6 +1528,7 @@ modalBody.addEventListener("click", (e) => {
   const player = session.players[menuTargetId];
   if (action === "close" || !player) return closeModal();
   if (action === "view") return openCardModal(player.commanderName);
+  if (action === "eliminate") return confirmEliminate(player.id, !player.eliminated);
   ensureAudio();
   sendMessage({ type: "trigger_targeted", soundId: action, targetPlayerId: menuTargetId });
   closeModal();
@@ -2062,6 +2071,9 @@ function countersHtml() {
       id: selfId,
       lethal: poison >= POISON_LETHAL,
     })}
+    <button class="btn btn-secondary elim-self" type="button" data-self-elim="1">
+      ${self.eliminated ? "I'm back in" : "I'm out of the game"}
+    </button>
     <h3>Commander damage dealt to you</h3>
     ${rows.length ? rows.join("") : `<p class="empty-state">Nobody else is at the table yet.</p>`}`;
 }
@@ -2116,3 +2128,52 @@ function playLethal() {
   );
   tone({ freq: 98, duration: 1.6, type: "sine", gain: 0.2, delay: 0.55 });
 }
+
+// ---------- elimination ----------
+// Explicit rather than inferred. Marking someone out takes them out of the
+// rotation, so it's confirmed first and always reversible — a player at 0 life
+// may still be playing, and a player at 40 may have decked out or conceded.
+function confirmEliminate(playerId, eliminated) {
+  const player = session.players[playerId];
+  if (!player) return;
+  const isSelf = playerId === selfId;
+  const who = isSelf ? "yourself" : player.displayName;
+  const pronoun = isSelf ? "You'll" : "They'll";
+  openModal(
+    eliminated ? "Out of the game?" : "Back in?",
+    `<p>${
+      eliminated
+        ? `Mark <strong>${escapeHtml(who)}</strong> as eliminated? ${pronoun} be skipped when the turn passes.`
+        : `Put <strong>${escapeHtml(who)}</strong> back into the turn order?`
+    }</p>
+     <div class="player-menu">
+       <button class="btn btn-primary" type="button" data-elim="yes"
+         data-id="${escapeHtml(playerId)}" data-value="${eliminated}">
+         ${eliminated ? "Yes, they're out" : "Yes, back in"}
+       </button>
+       <button class="btn btn-secondary" type="button" data-elim="no">Cancel</button>
+     </div>`
+  );
+}
+
+modalBody.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-elim]");
+  if (!btn) return;
+  if (btn.dataset.elim === "yes") {
+    ensureAudio();
+    sendMessage({
+      type: "set_eliminated",
+      targetPlayerId: btn.dataset.id,
+      eliminated: btn.dataset.value === "true",
+    });
+  }
+  closeModal();
+});
+
+// Your own toggle lives with your other loss-condition state.
+modalBody.addEventListener("click", (e) => {
+  if (e.target.closest("[data-self-elim]")) {
+    const self = session.players[selfId];
+    confirmEliminate(selfId, !self?.eliminated);
+  }
+});

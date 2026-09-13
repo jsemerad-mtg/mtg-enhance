@@ -72,6 +72,19 @@ function lethalReason(player) {
   return null;
 }
 
+// Walks the rotation past anyone who has been marked out. Falls back to the
+// immediate next seat if everyone else is eliminated, so the turn can never
+// get stuck with nowhere to go.
+function nextSeat(order, fromId, players) {
+  if (order.length === 0) return 0;
+  const at = order.indexOf(fromId);
+  for (let step = 1; step <= order.length; step++) {
+    const index = (at + step) % order.length;
+    if (!players[order[index]]?.eliminated) return index;
+  }
+  return (at + 1) % order.length;
+}
+
 function activePlayerId(state) {
   return state.turnOrder[state.activePlayerIndex] ?? null;
 }
@@ -106,6 +119,7 @@ export class GameSession extends DurableObject {
       if (!player.commanderDamage || typeof player.commanderDamage !== "object") player.commanderDamage = {};
       if (typeof player.poison !== "number") player.poison = 0;
       if (typeof player.lethalAnnounced !== "boolean") player.lethalAnnounced = false;
+      if (typeof player.eliminated !== "boolean") player.eliminated = false;
     }
   }
 
@@ -275,6 +289,9 @@ export class GameSession extends DurableObject {
             commanderDamage: {},
             poison: 0,
             lethalAnnounced: false,
+            // Explicit, never inferred: a player at 0 life may still be in the
+            // game, and a player at 40 may have decked out or conceded.
+            eliminated: false,
           };
           if (isFirstPlayer) this.sessionState.hostId = playerId;
           this.sessionState.turnOrder.push(playerId);
@@ -464,6 +481,40 @@ export class GameSession extends DurableObject {
         break;
       }
 
+      case "set_eliminated": {
+        const target = this.sessionState.players[msg.targetPlayerId];
+        if (!target) return;
+        const next = !!msg.eliminated;
+        if (target.eliminated === next) return;
+        target.eliminated = next;
+
+        // Their seat stays in turnOrder so bringing them back needs no
+        // reshuffle; passing simply steps over them while they're out.
+        if (next && activePlayerId(this.sessionState) === target.id) {
+          const order = this.sessionState.turnOrder.filter((id) => this.sessionState.players[id]);
+          this.sessionState.turnOrder = order;
+          this.sessionState.activePlayerIndex = nextSeat(order, target.id, this.sessionState.players);
+          this.sessionState.turnStartedAt = Date.now();
+          this.broadcast({
+            type: "turn_changed",
+            activePlayerId: activePlayerId(this.sessionState),
+            turnStartedAt: this.sessionState.turnStartedAt,
+          });
+        }
+        await this.persist();
+        this.broadcast({ type: "state_sync", state: this.publicState() });
+
+        // If they already crossed a lethal threshold they just heard this a
+        // moment ago, so don't play it twice for the same exit.
+        if (next && !target.lethalAnnounced) {
+          target.lethalAnnounced = true;
+          this.broadcast({ type: "lethal", playerId: target.id, reason: "eliminated" });
+        } else if (!next) {
+          target.lethalAnnounced = false;
+        }
+        break;
+      }
+
       case "trigger_targeted": {
         // Taunt and poke aimed at one player: it plays on their device and on
         // the sender's, so both ends of the exchange hear it.
@@ -536,7 +587,7 @@ export class GameSession extends DurableObject {
         const explicit = msg.toPlayerId && order.includes(msg.toPlayerId) ? msg.toPlayerId : null;
         this.sessionState.activePlayerIndex = explicit
           ? order.indexOf(explicit)
-          : (order.indexOf(fromId) + 1) % order.length;
+          : nextSeat(order, fromId, this.sessionState.players);
         this.sessionState.turnStartedAt = Date.now();
         await this.persist();
 
