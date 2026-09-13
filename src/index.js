@@ -67,7 +67,16 @@ export default {
 
     // Who is signed in, and what they own. The session comes from the shared
     // mtg-oracle.com cookie — this app has no sign-in of its own.
-    if (url.pathname === "/api/me") {
+    //
+    // Two paths, one handler. "/api/me" is a common enough endpoint name that
+    // ad-blocker filter lists match it: AdBlock Plus returned a bare 403 for it
+    // on this very domain (2026-09-13), with no error the page could see. Left
+    // unhandled that fails in the worst possible way — a signed-in player looks
+    // signed out, their purchase looks lost, and nothing in the app can tell
+    // you why. "/api/player-state" is specific enough not to match those
+    // lists. The old path stays for manual poking; the client must use the new
+    // one.
+    if (url.pathname === "/api/player-state" || url.pathname === "/api/me") {
       const me = await currentUser(request, env);
       return Response.json(me, {
         headers: { "Cache-Control": "no-store" },
