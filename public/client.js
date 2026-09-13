@@ -1415,22 +1415,48 @@ function renderTurnControls() {
 $("#btn-pass-turn").addEventListener("click", () => {
   // Easy to hit by accident beside the life buttons, and passing out of turn
   // can't be taken back without the whole table re-passing.
-  const next = nextPlayerName();
+  const next = nextPlayer();
+  const afterNext = next ? nextPlayer(next.id, true) : null;
+
+  // A player at 0 life may still be in the game — Platinum Angel, Phyrexian
+  // Unlife and Lich's Mastery all switch off the state-based action that
+  // would end it, and you can just as easily be out at 40 life by decking or
+  // conceding. So the app never decides: it offers the skip and lets whoever
+  // is passing say which is true right now.
+  const skipOption =
+    next && isLethal(next) && afterNext && afterNext.id !== next.id
+      ? `<button class="btn btn-secondary" type="button" data-confirm="skip"
+           data-to="${escapeHtml(afterNext.id)}">Skip to ${escapeHtml(afterNext.displayName)}</button>`
+      : "";
+
+  const note =
+    next && isLethal(next)
+      ? `<p class="menu-note">${escapeHtml(next.displayName)} is out of life — skip them only if they're actually out of the game.</p>`
+      : "";
+
   openModal(
     "Pass turn",
-    `<p>Hand the turn to <strong>${escapeHtml(next)}</strong>?</p>
+    `<p>Hand the turn to <strong>${escapeHtml(next?.displayName || "the next player")}</strong>?</p>
      <div class="player-menu">
        <button class="btn btn-primary" type="button" data-confirm="pass">Pass turn</button>
+       ${skipOption}
        <button class="btn btn-secondary" type="button" data-confirm="cancel">Not yet</button>
-     </div>`
+     </div>${note}`
   );
 });
 
-function nextPlayerName() {
+// The player after `fromId` in the rotation. With skipLethal, keeps walking
+// past players who are out, stopping if everyone else is.
+function nextPlayer(fromId = selfId, skipLethal = false) {
   const order = session.turnOrder.filter((id) => session.players[id]);
-  const at = order.indexOf(selfId);
-  if (at === -1 || order.length < 2) return "the next player";
-  return session.players[order[(at + 1) % order.length]]?.displayName || "the next player";
+  const at = order.indexOf(fromId);
+  if (at === -1 || order.length < 2) return null;
+  for (let step = 1; step <= order.length; step++) {
+    const candidate = session.players[order[(at + step) % order.length]];
+    if (!candidate) continue;
+    if (!skipLethal || !isLethal(candidate) || candidate.id === selfId) return candidate;
+  }
+  return session.players[order[(at + 1) % order.length]] ?? null;
 }
 
 modalBody.addEventListener("click", (e) => {
@@ -1439,6 +1465,9 @@ modalBody.addEventListener("click", (e) => {
   if (choice === "pass") {
     ensureAudio();
     sendMessage({ type: "pass_turn" });
+  } else if (choice === "skip") {
+    ensureAudio();
+    sendMessage({ type: "pass_turn", toPlayerId: e.target.closest("[data-to]")?.dataset.to });
   }
   closeModal();
 });

@@ -528,8 +528,15 @@ export class GameSession extends DurableObject {
 
         const fromId = att.playerId;
         this.sessionState.turnOrder = order;
-        this.sessionState.activePlayerIndex =
-          (order.indexOf(fromId) + 1) % order.length;
+
+        // The passer may name who they're passing to, so a player who is out
+        // can be skipped. Deliberately never automatic: a player at 0 life may
+        // still be in the game (Platinum Angel, Phyrexian Unlife, Lich's
+        // Mastery), so skipping is a human decision, not an inference.
+        const explicit = msg.toPlayerId && order.includes(msg.toPlayerId) ? msg.toPlayerId : null;
+        this.sessionState.activePlayerIndex = explicit
+          ? order.indexOf(explicit)
+          : (order.indexOf(fromId) + 1) % order.length;
         this.sessionState.turnStartedAt = Date.now();
         await this.persist();
 
