@@ -119,6 +119,7 @@
       </div>
       <span id="host-badge" class="host-badge" hidden></span>
       <div class="header-actions">
+        <span id="conn-status" class="conn-status" role="status" hidden></span>
         <button id="btn-oracle" class="header-icon" type="button" aria-label="Ask the Oracle a rules question">
           <span class="oracle-glyph">O</span>
         </button>
@@ -126,8 +127,9 @@
       </div>
     </header>
 
-    <div class="self-panel">
+    <div class="self-panel" id="self-panel">
       <p class="player-name" id="self-name"></p>
+      <p class="self-commander" id="self-commander" hidden></p>
       <div class="life-row">
         <button class="life-btn" data-delta="-1">−1</button>
         <span class="life-total" id="self-life">40</span>

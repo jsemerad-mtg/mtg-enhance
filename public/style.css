@@ -695,3 +695,70 @@ body {
 /* Keep the game code on one line when the mode badge sits beside it. */
 .code-box { flex-shrink: 0; }
 .host-badge { min-width: 0; }
+
+/* ---------- Connection status ---------- */
+
+.conn-status {
+  font-size: 0.72rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+  align-self: center;
+}
+
+.conn-status.conn-reconnecting {
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+  animation: conn-pulse 1.4s ease-in-out infinite;
+}
+
+.conn-status.conn-offline {
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+@keyframes conn-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* ---------- Activity glow ---------- */
+/* Fires on the triggering player's box and the control they pressed at the
+   same instant, on every device, so it reads as "who sent what". */
+
+.glow {
+  animation: glow-pulse 1.4s ease-out;
+  border-color: var(--accent) !important;
+}
+
+@keyframes glow-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(227, 167, 59, 0.55); }
+  35%  { box-shadow: 0 0 18px 4px rgba(227, 167, 59, 0.5); }
+  100% { box-shadow: 0 0 0 0 rgba(227, 167, 59, 0); }
+}
+
+/* ---------- Commander name / card viewer ---------- */
+
+.self-commander {
+  margin: -6px 0 10px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* touch-action:manipulation turns off double-tap-to-zoom on these elements,
+   which otherwise swallows the second tap before dblclick can fire. */
+[data-commander] {
+  cursor: pointer;
+  touch-action: manipulation;
+  border-bottom: 1px dotted var(--hairline);
+}
+[data-commander]:hover { color: var(--text); border-bottom-color: var(--accent-dim); }
+
+.card-image {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  margin: 4px auto 0;
+  border-radius: 4.75% / 3.5%;
+}

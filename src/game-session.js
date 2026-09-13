@@ -115,6 +115,13 @@ export class GameSession extends DurableObject {
     }
   }
 
+  // Every client needs to see WHO triggered WHAT so it can light up that
+  // player and that control — independent of which devices actually play the
+  // audio, which is why this can't ride along with play_sound.
+  announceActivity(playerId, soundId) {
+    this.broadcast({ type: "sound_activity", playerId, soundId });
+  }
+
   // Table-wide sounds (ambient music, board wipe): one device in colocated
   // mode, every device in remote mode. The single place that decision lives.
   playShared(message) {
@@ -225,6 +232,8 @@ export class GameSession extends DurableObject {
         }
         await this.persist();
 
+        this.announceActivity(att.playerId, "life_event");
+
         for (const target of targets) {
           this.broadcast({ type: "life_update", playerId: target.id, lifeTotal: target.lifeTotal });
           // Only the affected player's own device plays the sound,
@@ -253,6 +262,7 @@ export class GameSession extends DurableObject {
         // it's shared, every screen should grey out the button together.
         this.broadcast({ type: "cooldown_started", soundId: "broadcast", remainingMs: COOLDOWNS_MS.broadcast });
         this.playShared({ soundId: "broadcast", fromPlayerId: att.playerId });
+        this.announceActivity(att.playerId, "broadcast");
         break;
       }
 
@@ -264,6 +274,7 @@ export class GameSession extends DurableObject {
           soundId: "draw_card",
           fromPlayerId: att.playerId,
         });
+        this.announceActivity(att.playerId, "draw_card");
         break;
       }
 
@@ -280,6 +291,7 @@ export class GameSession extends DurableObject {
           fromPlayerId: player.id,
           colorIdentity: player.colorIdentity,
         });
+        this.announceActivity(player.id, "ambient");
         break;
       }
 
@@ -296,6 +308,7 @@ export class GameSession extends DurableObject {
           soundId: "taunt",
           fromPlayerId: att.playerId,
         });
+        this.announceActivity(att.playerId, "taunt");
         break;
       }
 

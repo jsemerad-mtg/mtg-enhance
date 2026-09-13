@@ -131,6 +131,11 @@ function render() {
   $("#game-code").textContent = code;
   $("#self-name").textContent = self.displayName;
   $("#self-life").textContent = self.lifeTotal;
+
+  const selfCommander = $("#self-commander");
+  selfCommander.textContent = self.commanderName || "";
+  selfCommander.hidden = !self.commanderName;
+  if (self.commanderName) selfCommander.dataset.commander = self.commanderName;
   const badge = $("#host-badge");
   badge.hidden = !self.isHost;
   badge.textContent =
@@ -146,9 +151,9 @@ function render() {
       const dots = (p.colorIdentity || []).map((c) => `<span class="color-dot color-${c.toLowerCase()}"></span>`).join("");
       const dead = p.lifeTotal <= 0 ? "dead" : "";
       const commander = p.commanderName
-        ? `<span class="opponent-commander">${escapeHtml(p.commanderName)}</span>`
+        ? `<span class="opponent-commander" data-commander="${escapeHtml(p.commanderName)}">${escapeHtml(p.commanderName)}</span>`
         : "";
-      return `<div class="opponent-row">
+      return `<div class="opponent-row" data-player-id="${escapeHtml(p.id)}">
         <div class="opponent-top">
           <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span> ${dots}</span>
           <span class="opponent-life">${p.lifeTotal}</span>
@@ -219,11 +224,14 @@ function escapeHtml(str) {
 // ---------- WebSocket ----------
 function connectAndJoin(joinCode, lobbyInfo) {
   code = joinCode.toUpperCase();
+  pendingLobbyInfo = lobbyInfo;
   const stored = loadStored(code) || {};
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${protocol}://${location.host}/ws/${code}`);
 
   ws.addEventListener("open", () => {
+    reconnectAttempts = 0;
+    setConnection("live");
     ws.send(
       JSON.stringify({
         type: "join",
@@ -248,6 +256,7 @@ function connectAndJoin(joinCode, lobbyInfo) {
           colorIdentity: lobbyInfo.colorIdentity ?? stored.colorIdentity,
         });
         showScreen("game");
+        requestWakeLock();
         break;
       }
       case "state_sync": {
@@ -281,6 +290,10 @@ function connectAndJoin(joinCode, lobbyInfo) {
         if (msg.soundId === "ambient_off") stopAmbient();
         break;
       }
+      case "sound_activity": {
+        showActivity(msg.playerId, msg.soundId);
+        break;
+      }
       case "cooldown_rejected":
       case "cooldown_started": {
         // Both mean the same thing to the UI: show/refresh the countdown.
@@ -296,9 +309,18 @@ function connectAndJoin(joinCode, lobbyInfo) {
     }
   });
 
+  // Phones close WebSockets aggressively — backgrounding the tab or letting
+  // the screen sleep is enough. Without this the whole UI goes quietly inert:
+  // life totals stop updating and every button becomes a no-op, with nothing
+  // on screen to say why.
   ws.addEventListener("close", () => {
-    // Proof-of-concept: no auto-reconnect UI yet. Reloading the page with
-    // the same join code will rejoin using the stored playerId.
+    if (leftGame) return;
+    setConnection("reconnecting");
+    scheduleReconnect();
+  });
+
+  ws.addEventListener("error", () => {
+    // A close event always follows, which is where reconnection is handled.
   });
 }
 
@@ -394,28 +416,28 @@ $("#form-lobby").addEventListener("submit", (e) => {
 // Life total controls
 document.querySelectorAll(".life-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
-    ws?.send(JSON.stringify({ type: "life_delta", delta: Number(btn.dataset.delta) }));
+    sendMessage({ type: "life_delta", delta: Number(btn.dataset.delta) });
   });
 });
 
 $("#btn-broadcast").addEventListener("click", () => {
   ensureAudio();
-  ws?.send(JSON.stringify({ type: "trigger_broadcast" }));
+  sendMessage({ type: "trigger_broadcast" });
 });
 
 $("#btn-ambient").addEventListener("click", () => {
   ensureAudio();
-  ws?.send(JSON.stringify({ type: "trigger_ambient", on: !ambientIsMine }));
+  sendMessage({ type: "trigger_ambient", on: !ambientIsMine });
 });
 
 $("#btn-taunt").addEventListener("click", () => {
   ensureAudio();
-  ws?.send(JSON.stringify({ type: "trigger_taunt" }));
+  sendMessage({ type: "trigger_taunt" });
 });
 
 $("#btn-draw").addEventListener("click", () => {
   ensureAudio();
-  ws?.send(JSON.stringify({ type: "trigger_draw_card" }));
+  sendMessage({ type: "trigger_draw_card" });
 });
 
 // Kind toggle group (Gains Life / Loses Life / Takes Damage) is static —
@@ -471,7 +493,7 @@ $("#btn-apply-life-event").addEventListener("click", () => {
   const scope = selectedTargetValue === "all" || selectedTargetValue === "opponents" ? selectedTargetValue : "single";
   const payload = { type: "life_event", scope, kind: selectedKindValue, amount: wheelAmount };
   if (scope === "single") payload.targetPlayerId = selectedTargetValue;
-  ws?.send(JSON.stringify(payload));
+  sendMessage(payload);
 });
 
 
@@ -892,3 +914,125 @@ const LOGIN_HTML = `
 $("#btn-help").addEventListener("click", () => openModal("How this works", HELP_HTML));
 $("#btn-oracle").addEventListener("click", () => openModal("Ask the Oracle", ORACLE_HTML));
 $("#btn-login").addEventListener("click", () => openModal("Log in", LOGIN_HTML));
+
+// ---------- connection resilience ----------
+// The single most confusing failure this app can have is a socket that died
+// quietly: the buttons still depress, nothing happens, and the life totals
+// silently stop matching everyone else's. So the socket reconnects itself,
+// sends are guarded, and the connection state is always on screen.
+let reconnectAttempts = 0;
+let reconnectTimer = null;
+let pendingLobbyInfo = {};
+let leftGame = false;
+const connStatus = $("#conn-status");
+
+function setConnection(state) {
+  if (state === "live") {
+    connStatus.hidden = true;
+    connStatus.className = "conn-status";
+    return;
+  }
+  connStatus.hidden = false;
+  connStatus.className = `conn-status conn-${state}`;
+  connStatus.textContent = state === "reconnecting" ? "Reconnecting…" : "Offline";
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer || leftGame) return;
+  // 1s, 2s, 4s… capped at 10s, so a phone that's been asleep for a while
+  // still comes back promptly without hammering the Worker.
+  const delay = Math.min(1000 * 2 ** reconnectAttempts, 10000);
+  reconnectAttempts++;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (code) connectAndJoin(code, pendingLobbyInfo);
+  }, delay);
+}
+
+function reconnectNow() {
+  if (leftGame || !code) return;
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  reconnectAttempts = 0;
+  connectAndJoin(code, pendingLobbyInfo);
+}
+
+function sendMessage(payload) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(payload));
+    return true;
+  }
+  // Deliberately not queued: a life change pressed while disconnected is
+  // better lost than replayed minutes later onto a board that has moved on.
+  setConnection("reconnecting");
+  reconnectNow();
+  return false;
+}
+
+// Coming back to the tab is the moment a phone's socket is most likely dead.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    reconnectNow();
+    requestWakeLock();
+  }
+});
+window.addEventListener("online", reconnectNow);
+window.addEventListener("offline", () => setConnection("offline"));
+
+// ---------- wake lock ----------
+// Keeps the screen (and with it the socket) alive during a game. Unsupported
+// or refused is fine — reconnection above covers it.
+let wakeLock = null;
+async function requestWakeLock() {
+  if (!("wakeLock" in navigator) || document.visibilityState !== "visible") return;
+  if (wakeLock && !wakeLock.released) return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+  } catch {
+    wakeLock = null;
+  }
+}
+
+// ---------- activity glow ----------
+// Lights up who triggered what, on every device, at the same moment.
+const ACTIVITY_CONTROL = {
+  broadcast: "#btn-broadcast",
+  ambient: "#btn-ambient",
+  taunt: "#btn-taunt",
+  draw_card: "#btn-draw",
+  life_event: "#btn-apply-life-event",
+};
+
+function flash(el) {
+  if (!el) return;
+  el.classList.remove("glow");
+  void el.offsetWidth; // restart the animation if it's already running
+  el.classList.add("glow");
+  setTimeout(() => el.classList.remove("glow"), 1400);
+}
+
+function showActivity(playerId, soundId) {
+  const playerBox =
+    playerId === selfId
+      ? $("#self-panel")
+      : document.querySelector(`.opponent-row[data-player-id="${CSS.escape(playerId)}"]`);
+  flash(playerBox);
+  flash($(ACTIVITY_CONTROL[soundId]));
+}
+
+// ---------- commander card viewer ----------
+// format=image returns the card art directly, so there's no JSON round trip.
+// Browser-side only: Scryfall blocks Cloudflare Worker IPs.
+function openCardModal(name) {
+  const src = `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(name)}&format=image&version=normal`;
+  openModal(name, `<img class="card-image" src="${escapeHtml(src)}" alt="${escapeHtml(name)}" />`);
+}
+
+// Delegated so it keeps working as opponent rows are re-rendered.
+document.addEventListener("dblclick", (e) => {
+  const el = e.target.closest("[data-commander]");
+  if (!el) return;
+  e.preventDefault();
+  openCardModal(el.dataset.commander);
+});
