@@ -1,23 +1,31 @@
 :root {
-  --bg: #10140f;
-  --panel: #1a2018;
-  --panel-raised: #212a1e;
-  --hairline: #333d2e;
-  --text: #f1eee2;
-  --text-muted: #8fa089;
-  --accent: #e3a73b;
-  --accent-dim: #7a5f28;
-  --danger: #c0503a;
+  /* Palette carried over from mtg-oracle.com so the two products read as
+     siblings: warm near-black rather than the green-black this started with,
+     and Oracle's gold. Text runs brighter than Oracle's here — this is read at
+     a table mid-game, not at a desk — and nothing is dimmed with opacity. */
+  --bg: #0d0a07;
+  --panel: #1a1410;
+  --panel-raised: #221c14;
+  --hairline: rgba(201, 168, 76, 0.28);
+  --text: #fbf4e8;
+  --text-muted: #c2b191;
+  --accent: #d9b75c;
+  --accent-bright: #f0d387;
+  --accent-dim: #8a6d36;
+  --danger: #d8564a;
 
-  --w: #f2e7c9;
-  --u: #5f8fd6;
-  --b: #8a7a9b;
-  --r: #d3654c;
-  --g: #6ba873;
-  --c: #a9a392;
+  --w: #f7efdd;
+  --u: #6f9ce0;
+  --b: #a08cb8;
+  --r: #de6a55;
+  --g: #6fb87f;
 
-  --font-display: "Fraunces", Georgia, serif;
+  --font-display: "Cinzel", Georgia, serif;
+  --font-numeral: "Fraunces", Georgia, serif;
   --font-body: "Inter", system-ui, -apple-system, sans-serif;
+
+  /* One noise tile, reused by the background and the gold buttons. */
+  --noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 * { box-sizing: border-box; }
@@ -1293,3 +1301,197 @@ body {
   font-size: 0.8rem;
 }
 .counter-chips { gap: 5px; }
+
+/* ============================================================
+   Grimoire — the finishing pass
+   ============================================================ */
+
+/* ---------- Ground: five-colour wash plus a noise tile ---------- */
+/* Oracle's background bleeds the five colours in at 5-7%. The noise sits on
+   top as a separate fixed layer so it never scrolls or tiles visibly, and it
+   ignores pointer events so it can't eat a tap the way a stray overlay would. */
+body {
+  background-image:
+    radial-gradient(at 18% 10%, rgba(139, 26, 26, 0.08) 0%, rgba(0, 0, 0, 0) 55%),
+    radial-gradient(at 84% 20%, rgba(26, 58, 107, 0.08) 0%, rgba(0, 0, 0, 0) 55%),
+    radial-gradient(at 62% 86%, rgba(26, 74, 42, 0.07) 0%, rgba(0, 0, 0, 0) 55%),
+    radial-gradient(at 22% 94%, rgba(201, 168, 76, 0.06) 0%, rgba(0, 0, 0, 0) 55%);
+  background-attachment: fixed;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: var(--noise);
+  opacity: 0.035;
+  mix-blend-mode: overlay;
+}
+
+#app { position: relative; z-index: 1; }
+
+/* ---------- Type ---------- */
+/* Cinzel is inscriptional and carries the Oracle look, but its digits are thin
+   — the life total gets read across a table mid-combat, so numbers stay
+   Fraunces. Cinzel takes the wordmark, the codes and the labels. */
+.wordmark { font-family: var(--font-display); letter-spacing: 0.04em; color: var(--accent-bright); }
+.join-code, .join-code-small { font-family: var(--font-display); letter-spacing: 0.16em; color: var(--accent-bright); }
+.life-total, .opponent-life, .wheel-item, .stepper-value, .order-index {
+  font-family: var(--font-numeral);
+}
+
+/* Micro-labels: small, letterspaced, gold — at full strength, not dimmed. */
+.code-label, .eyebrow-code, .field span, .field > label, .colors-field legend,
+.section-heading, .modal-body h3, .stepper-sub, .icon-caption {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--accent);
+}
+.code-label, .eyebrow-code { font-size: 0.6rem; }
+.field span, .field > label, .colors-field legend { font-size: 0.64rem; }
+.section-heading, .modal-body h3 { font-size: 0.74rem; color: var(--accent-bright); }
+.icon-caption { font-size: 0.6rem; letter-spacing: 0.1em; }
+.stepper-sub { font-size: 0.6rem; letter-spacing: 0.1em; }
+
+/* Nothing carries its meaning in opacity any more. */
+.tagline, .board-hint, .menu-note, .empty-state, .rejoin-sub, .field-note,
+.opponent-commander, .self-commander, .modal-body { color: var(--text-muted); }
+.placeholder-flag { opacity: 1; }
+.chip-value, .stepper-label, .order-name, .fav-name, .plan-label { color: var(--text); }
+
+/* ---------- Panels: hairline frame, faint inner warmth ---------- */
+.self-panel, .opponent-row, .life-event-panel, .icon-btn, .modal, .code-box,
+.number-wheel, .toggle-btn, .counter-chip, .stepper-row {
+  background-image: linear-gradient(180deg, rgba(217, 183, 92, 0.05), rgba(0, 0, 0, 0.12));
+}
+
+.self-panel.active-turn, .opponent-row.active-turn {
+  box-shadow: 0 0 22px rgba(217, 183, 92, 0.13), inset 0 0 0 1px var(--accent-dim);
+}
+.life-total { text-shadow: 0 0 28px rgba(217, 183, 92, 0.22); }
+
+/* ---------- Ornamental divider, as on Oracle's chat header ---------- */
+.divider { color: transparent; position: relative; }
+.divider::after {
+  content: "✦ ❦ ✦";
+  position: absolute;
+  inset: 0;
+  color: var(--accent);
+  letter-spacing: 0.45em;
+  font-size: 0.78rem;
+}
+
+/* ---------- Pressable gold: Send and Pass turn ---------- */
+/* Both are the "commit" actions, so they share one treatment: a gold face with
+   the same noise as the background, a lit top edge and a dark bottom edge to
+   give it a body, and a real drop shadow underneath. Pressing sinks the button
+   into its own shadow rather than just tinting it. */
+.send-btn,
+.pass-turn-btn,
+.btn-primary {
+  position: relative;
+  background-color: var(--accent);
+  background-image: var(--noise), linear-gradient(180deg, var(--accent-bright), #c39a3f);
+  background-blend-mode: overlay, normal;
+  background-size: 140px 140px, auto;
+  color: #1a1206;
+  border: 1px solid #a8813a;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 244, 214, 0.55),
+    inset 0 -2px 0 rgba(90, 62, 18, 0.4),
+    0 3px 0 #7c5a24,
+    0 6px 14px rgba(0, 0, 0, 0.45);
+  transition: transform 0.06s ease, box-shadow 0.06s ease, filter 0.12s ease;
+}
+
+.send-btn:active,
+.pass-turn-btn:active,
+.btn-primary:active {
+  transform: translateY(3px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 244, 214, 0.3),
+    inset 0 2px 6px rgba(60, 40, 10, 0.45),
+    0 0 0 #7c5a24,
+    0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+/* Pass turn now matches Send instead of being a quiet outline. */
+.pass-turn-btn {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  padding: 9px 16px;
+}
+.pass-turn-btn:hover { background-color: var(--accent-bright); }
+
+.send-btn span { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.04em; }
+
+/* ---------- Everything else that gets tapped ---------- */
+.icon-btn, .life-btn, .toggle-btn, .counter-chip, .stepper-btn, .btn-secondary,
+.header-icon, .sound-play, .sound-star {
+  transition: transform 0.07s ease, border-color 0.12s ease, background-color 0.12s ease;
+}
+.icon-btn:active, .life-btn:active, .toggle-btn:active, .counter-chip:active,
+.stepper-btn:active, .btn-secondary:active, .header-icon:active { transform: translateY(1px) scale(0.98); }
+
+.life-btn, .icon-btn {
+  box-shadow: inset 0 1px 0 rgba(255, 244, 214, 0.06), 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+/* ---------- Sound triggers: a visible thump ---------- */
+/* The sound and the motion fire together off the same server event, so every
+   device at the table sees the button move at the moment it hears it. */
+@keyframes trigger-pop {
+  0%   { transform: scale(1); }
+  22%  { transform: scale(1.11); }
+  55%  { transform: scale(0.985); }
+  100% { transform: scale(1); }
+}
+
+@keyframes trigger-ring {
+  0%   { opacity: 0.85; transform: scale(0.9); }
+  100% { opacity: 0; transform: scale(1.5); }
+}
+
+.trigger-pop { animation: trigger-pop 0.42s cubic-bezier(0.3, 1.4, 0.5, 1); }
+
+.trigger-pop::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 2px solid var(--accent-bright);
+  pointer-events: none;
+  animation: trigger-ring 0.52s ease-out forwards;
+}
+
+.icon-btn, .counter-chip, .send-btn, .pass-turn-btn { position: relative; }
+
+/* Anyone who has asked for less motion gets the colour change and none of the
+   movement. */
+@media (prefers-reduced-motion: reduce) {
+  .trigger-pop, .trigger-pop::after { animation: none; }
+  .send-btn, .pass-turn-btn, .btn-primary, .icon-btn, .life-btn,
+  .toggle-btn, .counter-chip, .stepper-btn, .btn-secondary, .header-icon {
+    transition: none;
+  }
+}
+
+/* A dotted border spans the whole row because the commander name is a block;
+   underlining the text itself keeps the "tap me" hint on the words. */
+[data-commander] {
+  border-bottom: none;
+  text-decoration: underline dotted var(--accent-dim);
+  text-underline-offset: 3px;
+}
+[data-commander]:hover { text-decoration-color: var(--accent); }
+
+.hdr-icon { width: 16px; height: 16px; display: block; }
+.header-icon .hdr-icon { margin: 0 auto; }
+.muted-pip { display: inline-flex; width: 12px; height: 12px; color: var(--danger); }
+.muted-pip .hdr-icon { width: 12px; height: 12px; }

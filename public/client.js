@@ -158,7 +158,9 @@ function render() {
       const active = p.id === session.activePlayerId ? " active-turn" : "";
       const doomed = p.eliminated ? " eliminated-row" : isLethal(p) ? " lethal-row" : "";
       const outTag = p.eliminated ? '<span class="out-tag">OUT</span>' : "";
-      const mutedIcon = p.muted ? '<span class="muted-pip" title="Sounds muted">\u{1F507}</span>' : "";
+      const mutedIcon = p.muted
+        ? `<span class="muted-pip" title="Sounds muted">${SPEAKER_OFF}</span>`
+        : "";
       const tableMarks = tableStateMarks(p.id);
       const commander = p.commanderName
         ? `<span class="opponent-commander" data-commander="${escapeHtml(p.commanderName)}">${escapeHtml(p.commanderName)}</span>`
@@ -599,6 +601,7 @@ initWheel();
 
 $("#btn-apply-life-event").addEventListener("click", () => {
   ensureAudio();
+  pop($("#btn-apply-life-event"));
   if (wheelAmount <= 0) return; // 0 is a no-op amount
   const scope = selectedTargetValue === "all" || selectedTargetValue === "opponents" ? selectedTargetValue : "single";
   const payload = { type: "life_event", scope, kind: selectedKindValue, amount: wheelAmount };
@@ -1112,12 +1115,18 @@ const ACTIVITY_CONTROL = {
   life_event: "#btn-apply-life-event",
 };
 
-function flash(el) {
+function flash(el, cls = "glow", ms = 1400) {
   if (!el) return;
-  el.classList.remove("glow");
+  el.classList.remove(cls);
   void el.offsetWidth; // restart the animation if it's already running
-  el.classList.add("glow");
-  setTimeout(() => el.classList.remove("glow"), 1400);
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), ms);
+}
+
+// Sound and motion fire off the same server event, so every device at the
+// table sees the control move at the moment it hears it.
+function pop(el) {
+  flash(el, "trigger-pop", 540);
 }
 
 function showActivity(playerId, soundId) {
@@ -1126,7 +1135,11 @@ function showActivity(playerId, soundId) {
       ? $("#self-panel")
       : document.querySelector(`.opponent-row[data-player-id="${CSS.escape(playerId)}"]`);
   flash(playerBox);
-  flash($(ACTIVITY_CONTROL[soundId]));
+  const control = $(ACTIVITY_CONTROL[soundId]) || document.querySelector(`[data-sound-id="${CSS.escape(soundId)}"]`);
+  if (control) {
+    flash(control);
+    pop(control);
+  }
 }
 
 // ---------- commander card viewer ----------
@@ -1212,12 +1225,14 @@ function playPassTurn() {
 let muted = false;
 try { muted = localStorage.getItem("mtge:muted") === "1"; } catch { muted = false; }
 
-const SPEAKER_ON = "\u{1F50A}";
-const SPEAKER_OFF = "\u{1F507}";
+// Inline SVG rather than emoji: the emoji speaker renders in its own colours
+// (blue on most platforms) and fights the palette.
+const SPEAKER_ON = `<svg class="hdr-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h4l5 4V5L8 9H4Z" fill="currentColor" stroke="none"/><path d="M16.5 8.8a4.5 4.5 0 0 1 0 6.4M19 6.2a8 8 0 0 1 0 11.6"/></svg>`;
+const SPEAKER_OFF = `<svg class="hdr-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h4l5 4V5L8 9H4Z" fill="currentColor" stroke="none"/><path d="m16.5 9.5 5 5M21.5 9.5l-5 5"/></svg>`;
 
 function renderMuteButton() {
   const btn = $("#btn-mute");
-  btn.textContent = muted ? SPEAKER_OFF : SPEAKER_ON;
+  btn.innerHTML = muted ? SPEAKER_OFF : SPEAKER_ON;
   btn.setAttribute("aria-pressed", String(muted));
   btn.setAttribute("aria-label", muted ? "Unmute all sounds" : "Mute all sounds");
   btn.classList.toggle("is-muted", muted);
@@ -1306,6 +1321,9 @@ $("#soundboard").addEventListener("click", (e) => {
   const id = btn.dataset.soundId;
   const meta = soundMeta(id);
   if (!meta) return;
+  // Immediate feedback: the server echo re-pops it, but a press should never
+  // feel like it's waiting on the network.
+  pop(btn);
   sendMessage(meta.library ? { type: "trigger_library_sound", soundId: id } : meta.message());
 });
 
