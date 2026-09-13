@@ -1267,3 +1267,29 @@ body {
 
 .table-state-row { display: flex; gap: 8px; margin-bottom: 8px; }
 .table-state-row .btn { flex: 1; font-size: 0.8rem; padding: 10px 8px; }
+
+/* The "more" chip reads as an action rather than a value: accent-tinted,
+   icon only, and sitting ahead of the numbers. */
+.counter-chip.chip-more {
+  padding: 6px 8px;
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+.counter-chip.chip-more:hover { border-color: var(--accent); }
+
+/* .btn-secondary is nowrap for the short "Join a game" label, which stops
+   flex:1 shrinking these two and pushes them off the modal. Let them wrap. */
+.table-state-row .btn {
+  white-space: normal;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+/* With four chips beside it the button gets squeezed and breaks "Pass turn"
+   across two lines, which makes the whole row taller. Keep it on one. */
+.pass-turn-btn {
+  white-space: nowrap;
+  padding: 8px 12px;
+  font-size: 0.8rem;
+}
+.counter-chips { gap: 5px; }

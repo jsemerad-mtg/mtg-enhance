@@ -2028,6 +2028,7 @@ function commanderTax(player) {
 }
 
 const CHIP_ICONS = {
+  more: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2.1" fill="currentColor" stroke="none"/><circle cx="10" cy="16" r="2.1" fill="currentColor" stroke="none"/></svg>`,
   poison: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C7.6 2 4 5.4 4 9.6c0 2.5 1.2 4.4 3 5.6V18a1 1 0 0 0 1 1h1.2l.4 2.2a1 1 0 0 0 1 .8h2.8a1 1 0 0 0 1-.8l.4-2.2H16a1 1 0 0 0 1-1v-2.8c1.8-1.2 3-3.1 3-5.6C20 5.4 16.4 2 12 2Zm-3 9a1.8 1.8 0 1 1 0-3.6 1.8 1.8 0 0 1 0 3.6Zm6 0a1.8 1.8 0 1 1 0-3.6 1.8 1.8 0 0 1 0 3.6Z"/></svg>`,
   tax: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 16c4-8 12-8 16 0"/><path d="M12 3v3M7.5 5l1.5 2.6M16.5 5 15 7.6"/></svg>`,
   cmdr: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20 14 10M7 4l13 13M10 7 7 4 4 7l3 3M17 20l3-3"/></svg>`,
@@ -2047,7 +2048,12 @@ function renderCounterChips() {
 
   // Poison and tax are always offered so they can be raised from zero.
   // Commander damage only appears once someone has connected with one.
+  // A leading affordance: the value chips are clickable, but nothing about a
+  // number suggests that, so this one carries the "there's more here" signal.
   const chips = [
+    `<button type="button" class="counter-chip chip-more" data-counters="open"
+       aria-label="Counters and table states" title="Counters and table states">
+       <span class="chip-icon">${CHIP_ICONS.more}</span></button>`,
     chip("poison", "Poison counters", poison, chipClass(poison, POISON_LETHAL)),
     chip("tax", "Commander tax", commanderTax(self)),
   ];
@@ -2131,10 +2137,10 @@ function countersHtml() {
     <h3>Table</h3>
     <div class="table-state-row">
       <button class="btn btn-secondary" type="button" data-table="monarch">
-        ${session.monarchPlayerId === selfId ? "Give up the monarch" : "Take the monarch"}
+        ${session.monarchPlayerId === selfId ? "Give up monarch" : "Take monarch"}
       </button>
       <button class="btn btn-secondary" type="button" data-table="initiative">
-        ${session.initiativePlayerId === selfId ? "Give up the initiative" : "Take the initiative"}
+        ${session.initiativePlayerId === selfId ? "Give up initiative" : "Take initiative"}
       </button>
     </div>
     ${tableHolderNote()}
