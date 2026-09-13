@@ -151,11 +151,12 @@ function render() {
       const dots = (p.colorIdentity || []).map((c) => `<span class="color-dot color-${c.toLowerCase()}"></span>`).join("");
       const dead = p.lifeTotal <= 0 ? "dead" : "";
       const active = p.id === session.activePlayerId ? " active-turn" : "";
+      const doomed = isLethal(p) ? " lethal-row" : "";
       const mutedIcon = p.muted ? '<span class="muted-pip" title="Sounds muted">\u{1F507}</span>' : "";
       const commander = p.commanderName
         ? `<span class="opponent-commander" data-commander="${escapeHtml(p.commanderName)}">${escapeHtml(p.commanderName)}</span>`
         : "";
-      return `<div class="opponent-row${active}" data-player-id="${escapeHtml(p.id)}" role="button" tabindex="0">
+      return `<div class="opponent-row${active}${doomed}" data-player-id="${escapeHtml(p.id)}" role="button" tabindex="0">
         <div class="opponent-top">
           <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span> ${dots}${mutedIcon}</span>
           <span class="opponent-life">${p.lifeTotal}</span>
@@ -173,6 +174,8 @@ function render() {
   ambientIsMine = session.ambientActivePlayerId === selfId;
   renderSoundboard();
   renderTurnControls();
+  renderCounterChips();
+  refreshOpenModal();
 }
 
 function renderTargetToggles(opponents) {
@@ -298,6 +301,13 @@ function connectAndJoin(joinCode, lobbyInfo) {
         if (session.players[msg.playerId]) {
           session.players[msg.playerId].lifeTotal = msg.lifeTotal;
           render();
+        }
+        break;
+      }
+      case "lethal": {
+        const who = session.players[msg.playerId];
+        if (who) {
+          flash(msg.playerId === selfId ? $("#self-panel") : document.querySelector(`.opponent-row[data-player-id="${CSS.escape(msg.playerId)}"]`));
         }
         break;
       }
@@ -910,6 +920,7 @@ const modalBody = $("#modal-body");
 function openModal(title, bodyHtml) {
   modalTitle.textContent = title;
   modalBody.className = "modal-body"; // drop any per-modal modifier
+  delete modalBody.dataset.kind;
   modalBody.innerHTML = bodyHtml;
   modalBody.scrollTop = 0;
   modalBackdrop.hidden = false;
@@ -1424,15 +1435,28 @@ function openPlayerMenu(playerId) {
   const pokeNote = canPoke
     ? ""
     : `<p class="menu-note">Poke unlocks once it's their turn and they've had it a minute.</p>`;
+  const self = session.players[selfId];
+  const dealt = commanderDamageOf(self)[playerId] ?? 0;
+  const damageRow = stepperRow({
+    label: `${player.displayName}'s commander → you`,
+    sub: dealt >= COMMANDER_DAMAGE_LETHAL ? "lethal" : `${COMMANDER_DAMAGE_LETHAL - dealt} to go`,
+    value: dealt,
+    action: "cmdr",
+    id: playerId,
+    lethal: dealt >= COMMANDER_DAMAGE_LETHAL,
+  });
+
   openModal(
     player.displayName,
-    `<div class="player-menu">
+    `${damageRow}
+    <div class="player-menu">
       <button class="btn btn-secondary" type="button" data-menu="taunt">Taunt</button>
       <button class="btn btn-secondary" type="button" data-menu="poke"${canPoke ? "" : " disabled"}>Poke</button>
       <button class="btn btn-secondary" type="button" data-menu="view"${player.commanderName ? "" : " disabled"}>View commander</button>
       <button class="btn btn-secondary" type="button" data-menu="close">Close</button>
     </div>${pokeNote}`
   );
+  modalBody.dataset.kind = "player-menu";
 }
 
 modalBody.addEventListener("click", (e) => {
@@ -1888,3 +1912,142 @@ $("#input-host-pin").addEventListener("input", (e) => {
 $("#input-join-pin").addEventListener("input", (e) => {
   e.target.value = e.target.value.replace(/\D/g, "").slice(0, 4);
 });
+
+// ---------- commander damage and poison ----------
+// The two loss conditions that aren't life. Commander damage is recorded per
+// source, because 21 is the threshold for a single commander rather than a
+// running total, so it lives keyed by the id of the player who dealt it.
+const COMMANDER_DAMAGE_LETHAL = 21;
+const POISON_LETHAL = 10;
+
+function commanderDamageOf(player) {
+  return player?.commanderDamage || {};
+}
+
+function worstCommanderDamage(player) {
+  const values = Object.values(commanderDamageOf(player));
+  return values.length ? Math.max(...values) : 0;
+}
+
+function isLethal(player) {
+  if (!player) return false;
+  return worstCommanderDamage(player) >= COMMANDER_DAMAGE_LETHAL || (player.poison ?? 0) >= POISON_LETHAL;
+}
+
+function chipClass(value, lethal) {
+  if (value >= lethal) return " lethal";
+  // Flag at roughly two-thirds, which is the point it starts mattering.
+  if (value >= Math.ceil(lethal * 0.66)) return " warn";
+  return "";
+}
+
+function renderCounterChips() {
+  const self = session.players[selfId];
+  if (!self) return;
+  const poison = self.poison ?? 0;
+  const worst = worstCommanderDamage(self);
+
+  // Poison is always offered so it can be raised from zero; commander damage
+  // only appears once someone has actually connected with one.
+  const chips = [
+    `<button type="button" class="counter-chip${chipClass(poison, POISON_LETHAL)}" data-counters="open">
+       <span>Poison</span><span class="chip-value">${poison}</span></button>`,
+  ];
+  if (worst > 0) {
+    chips.push(`<button type="button" class="counter-chip${chipClass(worst, COMMANDER_DAMAGE_LETHAL)}" data-counters="open">
+       <span>Cmdr</span><span class="chip-value">${worst}</span></button>`);
+  }
+  $("#counter-chips").innerHTML = chips.join("");
+}
+
+function stepperRow({ label, sub, value, action, id, lethal }) {
+  return `<div class="stepper-row${lethal ? " lethal" : ""}">
+    <span class="stepper-label">${escapeHtml(label)}${sub ? `<span class="stepper-sub">${escapeHtml(sub)}</span>` : ""}</span>
+    <button type="button" class="stepper-btn" data-step="${action}" data-id="${escapeHtml(id)}" data-delta="-1">−</button>
+    <span class="stepper-value">${value}</span>
+    <button type="button" class="stepper-btn" data-step="${action}" data-id="${escapeHtml(id)}" data-delta="1">+</button>
+  </div>`;
+}
+
+function countersHtml() {
+  const self = session.players[selfId];
+  if (!self) return "";
+  const poison = self.poison ?? 0;
+  const damage = commanderDamageOf(self);
+
+  const banner = isLethal(self)
+    ? `<p class="lethal-banner">That's lethal — ${
+        worstCommanderDamage(self) >= COMMANDER_DAMAGE_LETHAL
+          ? `21 commander damage from one commander`
+          : `10 poison counters`
+      }.</p>`
+    : "";
+
+  const opponents = Object.values(session.players).filter((p) => p.id !== selfId);
+  const rows = opponents.map((p) => {
+    const value = damage[p.id] ?? 0;
+    return stepperRow({
+      label: `${p.displayName}'s commander`,
+      sub: value >= COMMANDER_DAMAGE_LETHAL ? "lethal" : `${COMMANDER_DAMAGE_LETHAL - value} to go`,
+      value,
+      action: "cmdr",
+      id: p.id,
+      lethal: value >= COMMANDER_DAMAGE_LETHAL,
+    });
+  });
+
+  return `${banner}
+    <p class="board-hint">Commander damage also takes the life with it, so record it here rather than twice.</p>
+    ${stepperRow({
+      label: "Poison counters",
+      sub: poison >= POISON_LETHAL ? "lethal" : `${POISON_LETHAL - poison} to go`,
+      value: poison,
+      action: "poison",
+      id: selfId,
+      lethal: poison >= POISON_LETHAL,
+    })}
+    <h3>Commander damage dealt to you</h3>
+    ${rows.length ? rows.join("") : `<p class="empty-state">Nobody else is at the table yet.</p>`}`;
+}
+
+function openCounters() {
+  openModal("Your counters", countersHtml());
+  modalBody.classList.add("counters-modal");
+  modalBody.dataset.kind = "counters";
+}
+
+$("#counter-chips").addEventListener("click", (e) => {
+  if (e.target.closest("[data-counters]")) openCounters();
+});
+
+// Steppers are shared by the counters modal and the opponent menu.
+modalBody.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-step]");
+  if (!btn) return;
+  const delta = Number(btn.dataset.delta);
+  if (btn.dataset.step === "poison") {
+    sendMessage({ type: "poison", targetPlayerId: selfId, delta });
+  } else {
+    // Damage is always recorded on yourself, from the opponent whose
+    // commander dealt it — the same direction a player tracks it physically.
+    ensureAudio();
+    sendMessage({ type: "commander_damage", targetPlayerId: selfId, sourcePlayerId: btn.dataset.id, delta });
+  }
+  // No optimistic redraw here: refreshOpenModal() runs off the state_sync the
+  // server sends back, so rapid taps can't show a number the server hasn't
+  // accepted, and can't lag behind one it has.
+});
+
+// Keeps a counter panel in step with the table while it's open.
+function refreshOpenModal() {
+  if (modalBackdrop.hidden) return;
+  const kind = modalBody.dataset.kind;
+  if (kind !== "counters" && kind !== "player-menu") return;
+  const scroll = modalBody.scrollTop;
+  if (kind === "counters") {
+    modalBody.innerHTML = countersHtml();
+  } else if (menuTargetId && session.players[menuTargetId]) {
+    openPlayerMenu(menuTargetId);
+  }
+  modalBody.scrollTop = scroll;
+}

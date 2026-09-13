@@ -55,6 +55,11 @@ function initialState(sessionId, mode = "colocated", pin = null) {
 // actually holding the table up: the active player, one minute into their turn.
 const POKE_MIN_TURN_MS = 60000;
 
+// The two non-life loss conditions. 21 combat damage from a single commander,
+// or 10 poison counters, and you're out.
+const COMMANDER_DAMAGE_LETHAL = 21;
+const POISON_LETHAL = 10;
+
 function activePlayerId(state) {
   return state.turnOrder[state.activePlayerIndex] ?? null;
 }
@@ -86,6 +91,8 @@ export class GameSession extends DurableObject {
     if (typeof state.turnStartedAt !== "number") state.turnStartedAt = Date.now();
     for (const player of Object.values(state.players || {})) {
       if (typeof player.muted !== "boolean") player.muted = false;
+      if (!player.commanderDamage || typeof player.commanderDamage !== "object") player.commanderDamage = {};
+      if (typeof player.poison !== "number") player.poison = 0;
     }
   }
 
@@ -237,6 +244,10 @@ export class GameSession extends DurableObject {
             isHost: isFirstPlayer,
             connected: true,
             muted: false,
+            // Keyed by the id of the player whose commander dealt it, since
+            // the 21 threshold is per-commander, not cumulative.
+            commanderDamage: {},
+            poison: 0,
           };
           if (isFirstPlayer) this.sessionState.hostId = playerId;
           this.sessionState.turnOrder.push(playerId);
@@ -377,6 +388,58 @@ export class GameSession extends DurableObject {
           fromPlayerId: att.playerId,
         });
         this.announceActivity(att.playerId, "taunt");
+        break;
+      }
+
+      case "commander_damage": {
+        // Recorded on the player taking it, keyed by the commander's
+        // controller. Combat damage from a commander also costs life, so this
+        // moves both together rather than making players do it twice.
+        const target = this.sessionState.players[msg.targetPlayerId];
+        const source = this.sessionState.players[msg.sourcePlayerId];
+        const delta = Number(msg.delta);
+        if (!target || !source || !Number.isFinite(delta) || delta === 0) return;
+
+        const current = target.commanderDamage[source.id] ?? 0;
+        const next = Math.max(0, current + delta);
+        const applied = next - current; // clamped at zero, so life matches
+        if (applied === 0) return;
+
+        target.commanderDamage[source.id] = next;
+        target.lifeTotal -= applied;
+        await this.persist();
+
+        this.broadcast({ type: "life_update", playerId: target.id, lifeTotal: target.lifeTotal });
+        this.broadcast({ type: "state_sync", state: this.publicState() });
+        if (applied > 0) {
+          this.sendToPlayer(target.id, {
+            type: "play_sound",
+            soundId: "damage",
+            fromPlayerId: att.playerId,
+          });
+          this.announceActivity(att.playerId, "commander_damage");
+        }
+        if (next >= COMMANDER_DAMAGE_LETHAL) {
+          this.broadcast({
+            type: "lethal",
+            playerId: target.id,
+            reason: "commander",
+            sourcePlayerId: source.id,
+          });
+        }
+        break;
+      }
+
+      case "poison": {
+        const target = this.sessionState.players[msg.targetPlayerId] ?? this.sessionState.players[att.playerId];
+        const delta = Number(msg.delta);
+        if (!target || !Number.isFinite(delta) || delta === 0) return;
+        target.poison = Math.max(0, Math.min(POISON_LETHAL, (target.poison ?? 0) + delta));
+        await this.persist();
+        this.broadcast({ type: "state_sync", state: this.publicState() });
+        if (target.poison >= POISON_LETHAL) {
+          this.broadcast({ type: "lethal", playerId: target.id, reason: "poison" });
+        }
         break;
       }
 
