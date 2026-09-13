@@ -48,6 +48,11 @@ function initialState(sessionId, mode = "colocated", pin = null) {
     turnOrder: [],
     activePlayerIndex: 0,
     turnStartedAt: Date.now(),
+    // Table-wide states with a single holder. A playmat gives every player a
+    // box for these because it needs somewhere to put the token; only one
+    // player can hold each, so one field apiece is the honest shape.
+    monarchPlayerId: null,
+    initiativePlayerId: null,
   };
 }
 
@@ -112,6 +117,8 @@ export class GameSession extends DurableObject {
     const state = this.sessionState;
     if (!state) return;
     if (!Array.isArray(state.turnOrder)) state.turnOrder = Object.keys(state.players || {});
+    if (state.monarchPlayerId === undefined) state.monarchPlayerId = null;
+    if (state.initiativePlayerId === undefined) state.initiativePlayerId = null;
     if (typeof state.activePlayerIndex !== "number") state.activePlayerIndex = 0;
     if (typeof state.turnStartedAt !== "number") state.turnStartedAt = Date.now();
     for (const player of Object.values(state.players || {})) {
@@ -120,6 +127,7 @@ export class GameSession extends DurableObject {
       if (typeof player.poison !== "number") player.poison = 0;
       if (typeof player.lethalAnnounced !== "boolean") player.lethalAnnounced = false;
       if (typeof player.eliminated !== "boolean") player.eliminated = false;
+      if (typeof player.commanderCasts !== "number") player.commanderCasts = 0;
     }
   }
 
@@ -288,6 +296,8 @@ export class GameSession extends DurableObject {
             // the 21 threshold is per-commander, not cumulative.
             commanderDamage: {},
             poison: 0,
+            // Times cast from the command zone. The tax is twice this.
+            commanderCasts: 0,
             lethalAnnounced: false,
             // Explicit, never inferred: a player at 0 life may still be in the
             // game, and a player at 40 may have decked out or conceded.
@@ -467,6 +477,27 @@ export class GameSession extends DurableObject {
           this.announceActivity(att.playerId, "commander_damage");
         }
         this.announceLethal(target);
+        break;
+      }
+
+      case "commander_casts": {
+        const target = this.sessionState.players[msg.targetPlayerId] ?? this.sessionState.players[att.playerId];
+        const delta = Number(msg.delta);
+        if (!target || !Number.isFinite(delta) || delta === 0) return;
+        target.commanderCasts = Math.max(0, (target.commanderCasts ?? 0) + delta);
+        await this.persist();
+        this.broadcast({ type: "state_sync", state: this.publicState() });
+        break;
+      }
+
+      case "set_table_state": {
+        // Monarch and initiative move around the table; passing them to
+        // whoever already holds it hands it back to nobody.
+        const field = msg.which === "initiative" ? "initiativePlayerId" : "monarchPlayerId";
+        const wanted = msg.playerId && this.sessionState.players[msg.playerId] ? msg.playerId : null;
+        this.sessionState[field] = this.sessionState[field] === wanted ? null : wanted;
+        await this.persist();
+        this.broadcast({ type: "state_sync", state: this.publicState() });
         break;
       }
 

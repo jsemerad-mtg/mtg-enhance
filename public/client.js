@@ -101,7 +101,8 @@ let ws = null;
 let code = null;
 let selfId = null;
 let session = { players: {}, hostId: null, ambientActivePlayerId: null, mode: "colocated",
-                turnOrder: [], activePlayerId: null, turnStartedAt: Date.now() };
+                turnOrder: [], activePlayerId: null, turnStartedAt: Date.now(),
+                monarchPlayerId: null, initiativePlayerId: null };
 let ambientIsMine = false;
 const cooldownTimers = {}; // soundId -> interval handle
 
@@ -132,7 +133,7 @@ function render() {
   if (!self) return;
 
   $("#game-code").textContent = code;
-  $("#self-name").textContent = self.displayName;
+  $("#self-name").innerHTML = `${escapeHtml(self.displayName)}${tableStateMarks(selfId)}`;
   $("#self-life").textContent = self.lifeTotal;
 
   $("#self-panel").classList.toggle("active-turn", session.activePlayerId === selfId);
@@ -158,12 +159,13 @@ function render() {
       const doomed = p.eliminated ? " eliminated-row" : isLethal(p) ? " lethal-row" : "";
       const outTag = p.eliminated ? '<span class="out-tag">OUT</span>' : "";
       const mutedIcon = p.muted ? '<span class="muted-pip" title="Sounds muted">\u{1F507}</span>' : "";
+      const tableMarks = tableStateMarks(p.id);
       const commander = p.commanderName
         ? `<span class="opponent-commander" data-commander="${escapeHtml(p.commanderName)}">${escapeHtml(p.commanderName)}</span>`
         : "";
       return `<div class="opponent-row${active}${doomed}" data-player-id="${escapeHtml(p.id)}" role="button" tabindex="0">
         <div class="opponent-top">
-          <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span> ${dots}${mutedIcon}${outTag}</span>
+          <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span> ${dots}${mutedIcon}${tableMarks}${outTag}</span>
           <span class="opponent-life">${p.lifeTotal}</span>
         </div>
         ${commander}
@@ -297,6 +299,8 @@ function connectAndJoin(joinCode, lobbyInfo) {
         session.ambientActivePlayerId = msg.state.ambientActivePlayerId;
         session.mode = msg.state.mode || "colocated";
         session.turnOrder = msg.state.turnOrder || [];
+        session.monarchPlayerId = msg.state.monarchPlayerId ?? null;
+        session.initiativePlayerId = msg.state.initiativePlayerId ?? null;
         session.turnStartedAt = msg.state.turnStartedAt || Date.now();
         session.activePlayerId = session.turnOrder[msg.state.activePlayerIndex ?? 0] ?? null;
         render();
@@ -1513,6 +1517,12 @@ function openPlayerMenu(playerId) {
       <button class="btn btn-secondary" type="button" data-menu="taunt">Taunt</button>
       <button class="btn btn-secondary" type="button" data-menu="poke"${canPoke ? "" : " disabled"}>Poke</button>
       <button class="btn btn-secondary" type="button" data-menu="view"${player.commanderName ? "" : " disabled"}>View commander</button>
+      <button class="btn btn-secondary" type="button" data-menu="monarch">
+        ${session.monarchPlayerId === playerId ? "Remove the monarch" : "Make them the monarch"}
+      </button>
+      <button class="btn btn-secondary" type="button" data-menu="initiative">
+        ${session.initiativePlayerId === playerId ? "Remove the initiative" : "Give them the initiative"}
+      </button>
       <button class="btn btn-secondary" type="button" data-menu="eliminate">
         ${player.eliminated ? "Bring back in" : "Mark eliminated"}
       </button>
@@ -1529,6 +1539,10 @@ modalBody.addEventListener("click", (e) => {
   if (action === "close" || !player) return closeModal();
   if (action === "view") return openCardModal(player.commanderName);
   if (action === "eliminate") return confirmEliminate(player.id, !player.eliminated);
+  if (action === "monarch" || action === "initiative") {
+    sendMessage({ type: "set_table_state", which: action, playerId: menuTargetId });
+    return closeModal();
+  }
   ensureAudio();
   sendMessage({ type: "trigger_targeted", soundId: action, targetPlayerId: menuTargetId });
   closeModal();
@@ -2006,23 +2020,58 @@ function chipClass(value, lethal) {
   return "";
 }
 
+// Commander tax is twice the number of times it has been cast from the
+// command zone. The chip shows the cost, not the count, because the cost is
+// the number you need when you're deciding whether you can afford it.
+function commanderTax(player) {
+  return (player?.commanderCasts ?? 0) * 2;
+}
+
+const CHIP_ICONS = {
+  poison: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C7.6 2 4 5.4 4 9.6c0 2.5 1.2 4.4 3 5.6V18a1 1 0 0 0 1 1h1.2l.4 2.2a1 1 0 0 0 1 .8h2.8a1 1 0 0 0 1-.8l.4-2.2H16a1 1 0 0 0 1-1v-2.8c1.8-1.2 3-3.1 3-5.6C20 5.4 16.4 2 12 2Zm-3 9a1.8 1.8 0 1 1 0-3.6 1.8 1.8 0 0 1 0 3.6Zm6 0a1.8 1.8 0 1 1 0-3.6 1.8 1.8 0 0 1 0 3.6Z"/></svg>`,
+  tax: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 16c4-8 12-8 16 0"/><path d="M12 3v3M7.5 5l1.5 2.6M16.5 5 15 7.6"/></svg>`,
+  cmdr: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20 14 10M7 4l13 13M10 7 7 4 4 7l3 3M17 20l3-3"/></svg>`,
+};
+
+function chip(kind, label, value, extraClass = "") {
+  return `<button type="button" class="counter-chip${extraClass}" data-counters="open"
+    aria-label="${escapeHtml(label)}: ${value}" title="${escapeHtml(label)}">
+    <span class="chip-icon">${CHIP_ICONS[kind]}</span><span class="chip-value">${value}</span></button>`;
+}
+
 function renderCounterChips() {
   const self = session.players[selfId];
   if (!self) return;
   const poison = self.poison ?? 0;
   const worst = worstCommanderDamage(self);
 
-  // Poison is always offered so it can be raised from zero; commander damage
-  // only appears once someone has actually connected with one.
+  // Poison and tax are always offered so they can be raised from zero.
+  // Commander damage only appears once someone has connected with one.
   const chips = [
-    `<button type="button" class="counter-chip${chipClass(poison, POISON_LETHAL)}" data-counters="open">
-       <span>Poison</span><span class="chip-value">${poison}</span></button>`,
+    chip("poison", "Poison counters", poison, chipClass(poison, POISON_LETHAL)),
+    chip("tax", "Commander tax", commanderTax(self)),
   ];
   if (worst > 0) {
-    chips.push(`<button type="button" class="counter-chip${chipClass(worst, COMMANDER_DAMAGE_LETHAL)}" data-counters="open">
-       <span>Cmdr</span><span class="chip-value">${worst}</span></button>`);
+    chips.push(chip("cmdr", "Commander damage taken", worst, chipClass(worst, COMMANDER_DAMAGE_LETHAL)));
   }
   $("#counter-chips").innerHTML = chips.join("");
+}
+
+// Crown and initiative markers, shown on whoever currently holds them.
+const TABLE_ICONS = {
+  monarch: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 8l3.5 3L12 4l5.5 7L21 8l-1.6 9.4a1 1 0 0 1-1 .8H5.6a1 1 0 0 1-1-.8L3 8Z"/></svg>`,
+  initiative: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M5 21V10a7 7 0 0 1 14 0v11"/><path d="M9 21v-8M15 21v-8M5 14h14M5 17.5h14"/></svg>`,
+};
+
+function tableStateMarks(playerId) {
+  let out = "";
+  if (session.monarchPlayerId === playerId) {
+    out += `<span class="table-mark" title="The monarch">${TABLE_ICONS.monarch}</span>`;
+  }
+  if (session.initiativePlayerId === playerId) {
+    out += `<span class="table-mark" title="The initiative">${TABLE_ICONS.initiative}</span>`;
+  }
+  return out;
 }
 
 function stepperRow({ label, sub, value, action, id, lethal }) {
@@ -2071,6 +2120,25 @@ function countersHtml() {
       id: selfId,
       lethal: poison >= POISON_LETHAL,
     })}
+    ${stepperRow({
+      label: "Commander tax",
+      sub: `cast ${self.commanderCasts ?? 0}\u00d7 \u2014 costs ${commanderTax(self)} more`,
+      value: commanderTax(self),
+      action: "casts",
+      id: selfId,
+    })}
+
+    <h3>Table</h3>
+    <div class="table-state-row">
+      <button class="btn btn-secondary" type="button" data-table="monarch">
+        ${session.monarchPlayerId === selfId ? "Give up the monarch" : "Take the monarch"}
+      </button>
+      <button class="btn btn-secondary" type="button" data-table="initiative">
+        ${session.initiativePlayerId === selfId ? "Give up the initiative" : "Take the initiative"}
+      </button>
+    </div>
+    ${tableHolderNote()}
+
     <button class="btn btn-secondary elim-self" type="button" data-self-elim="1">
       ${self.eliminated ? "I'm back in" : "I'm out of the game"}
     </button>
@@ -2093,7 +2161,10 @@ modalBody.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-step]");
   if (!btn) return;
   const delta = Number(btn.dataset.delta);
-  if (btn.dataset.step === "poison") {
+  if (btn.dataset.step === "casts") {
+    // The stepper shows the cost but moves by one cast, so it steps in twos.
+    sendMessage({ type: "commander_casts", targetPlayerId: selfId, delta });
+  } else if (btn.dataset.step === "poison") {
     sendMessage({ type: "poison", targetPlayerId: selfId, delta });
   } else {
     // Damage is always recorded on yourself, from the opponent whose
@@ -2176,4 +2247,20 @@ modalBody.addEventListener("click", (e) => {
     const self = session.players[selfId];
     confirmEliminate(selfId, !self?.eliminated);
   }
+});
+
+// Says who currently holds each table state, since only one player can.
+function tableHolderNote() {
+  const lines = [];
+  const monarch = session.players[session.monarchPlayerId];
+  const initiative = session.players[session.initiativePlayerId];
+  if (monarch) lines.push(`${escapeHtml(monarch.displayName)} has the monarch.`);
+  if (initiative) lines.push(`${escapeHtml(initiative.displayName)} has the initiative.`);
+  return lines.length ? `<p class="menu-note">${lines.join(" ")}</p>` : "";
+}
+
+modalBody.addEventListener("click", (e) => {
+  const which = e.target.closest("[data-table]")?.dataset.table;
+  if (!which) return;
+  sendMessage({ type: "set_table_state", which, playerId: selfId });
 });

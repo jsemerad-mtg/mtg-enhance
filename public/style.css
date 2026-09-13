@@ -1246,3 +1246,24 @@ body {
 }
 
 .elim-self { width: 100%; margin: 4px 0 14px; }
+
+/* ---------- Counter chips and table markers ---------- */
+/* Icons rather than words: three chips plus Pass turn have to share one row
+   inside the self panel on a 375px phone. Full names live in the modal. */
+
+.chip-icon { display: flex; width: 15px; height: 15px; }
+.chip-icon svg { width: 100%; height: 100%; }
+.counter-chip { padding: 6px 9px; gap: 4px; }
+
+.table-mark {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  color: var(--accent);
+  vertical-align: -2px;
+  margin-left: 3px;
+}
+.table-mark svg { width: 100%; height: 100%; }
+
+.table-state-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.table-state-row .btn { flex: 1; font-size: 0.8rem; padding: 10px 8px; }
