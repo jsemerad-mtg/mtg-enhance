@@ -18,6 +18,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(ROOT, "public", "commanders.json");
 const QUERY = "is:commander legal:commander";
 const PAGE_PAUSE_MS = 120; // Scryfall asks for 50–100ms between requests
+const WUBRG = ["W", "U", "B", "R", "G"];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -38,7 +39,10 @@ async function main() {
     const json = await res.json();
 
     for (const card of json.data) {
-      entries.push(`${card.name}|${card.color_identity.join("")}`);
+      // Scryfall gives color_identity alphabetically (["B","G","U","W"]);
+      // store it in WUBRG order so the string is a stable key.
+      const ci = WUBRG.filter((c) => card.color_identity.includes(c)).join("");
+      entries.push(`${card.name}|${ci}`);
     }
     process.stdout.write(`\rpage ${page} — ${entries.length} commanders`);
 

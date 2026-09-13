@@ -578,6 +578,15 @@ function searchCommanders(query) {
 // ---------- color identity helpers ----------
 const WUBRG = ["W", "U", "B", "R", "G"];
 
+// Scryfall returns color_identity ALPHABETICALLY (Atraxa is ["B","G","U","W"]),
+// not in WUBRG order. Everything downstream — the mismatch check, the note,
+// the pips, and eventually the color-identity sound-set key — has to compare
+// and display one canonical form, so normalise the moment a value arrives.
+function canonicalIdentity(letters) {
+  const set = new Set(String(letters || "").toUpperCase().split(""));
+  return WUBRG.filter((c) => set.has(c)).join("");
+}
+
 function identityLabel(ci) {
   return ci === "" ? "colorless" : ci;
 }
@@ -609,7 +618,8 @@ function checkIdentityMismatch() {
 
 function pipsHtml(ci) {
   if (ci === null) return "";
-  const letters = ci === "" ? ["C"] : ci.split("");
+  const canonical = canonicalIdentity(ci);
+  const letters = canonical === "" ? ["C"] : canonical.split("");
   return `<span class="suggestion-pips">${letters
     .map((c) => `<span class="color-dot color-${c.toLowerCase()}"></span>`)
     .join("")}</span>`;
@@ -627,7 +637,8 @@ function setNote(text, warn = false) {
 }
 
 // Single place where a resolved commander lands, whichever source found it.
-function applyCommander(name, ci) {
+function applyCommander(name, rawCi) {
+  const ci = canonicalIdentity(rawCi);
   expectedCommanderName = name;
   expectedIdentity = ci;
   commanderInput.value = name.slice(0, 40);
@@ -717,7 +728,7 @@ async function resolveCommanderLive(name) {
     const card = await res.json();
     applyCommander(card.name, card.color_identity.join(""));
     if (card.legalities?.commander !== "legal") {
-      setNote(`${identityLabel(card.color_identity.join(""))} — ${card.name} isn't Commander-legal, but colors are set.`, true);
+      setNote(`${identityLabel(canonicalIdentity(card.color_identity.join("")))} — ${card.name} isn't Commander-legal, but colors are set.`, true);
     }
   } catch (err) {
     if (err.name !== "AbortError") setNote("Couldn't reach Scryfall — set colors by hand.", true);
