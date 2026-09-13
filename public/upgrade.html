@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Upgrade — MTG Enhance</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<main id="app">
+  <section class="screen">
+    <h1 class="wordmark">Full soundboard</h1>
+
+    <p class="placeholder-flag">Preview — checkout not connected yet</p>
+
+    <div id="upgrade-body">
+      <p class="upgrade-lede">Every universal sound, plus every sound in your
+      commander's color identity — and the ability to star any of them into
+      your three hotkey slots.</p>
+
+      <ul class="upgrade-list">
+        <li>The complete sound library, not just the three defaults</li>
+        <li>Swap any sound into a hotkey slot</li>
+        <li>Save your favorite commanders across games</li>
+        <li>Custom sound packs and your own uploads, when they land</li>
+      </ul>
+
+      <p class="field-note">Price and payment aren't set up yet. When they are,
+      this page becomes the Stripe Checkout hand-off.</p>
+
+      <p id="upgrade-error" class="field-note error" hidden></p>
+
+      <button id="btn-buy" class="btn btn-primary upgrade-cta" type="button">
+        Simulate purchase (for testing)
+      </button>
+    </div>
+
+    <div id="upgrade-done" hidden>
+      <p class="upgrade-lede">You're upgraded. The full board is unlocked in your game.</p>
+      <button id="btn-return" class="btn btn-primary upgrade-cta" type="button">Back to your game</button>
+    </div>
+  </section>
+</main>
+
+<script>
+// Opened in its own window so the game keeps its WebSocket and its place at
+// the table. Same origin, so writing the flag here fires a `storage` event in
+// the opener and the board unlocks without a reload — which is also how the
+// real Stripe return will behave.
+const ACCOUNT_KEY = "mtge:account";
+
+function readAccount() {
+  try { return JSON.parse(localStorage.getItem(ACCOUNT_KEY) || "null"); } catch { return null; }
+}
+
+document.getElementById("btn-buy").addEventListener("click", () => {
+  const account = readAccount();
+  const error = document.getElementById("upgrade-error");
+  if (!account) {
+    error.textContent = "Sign in on the main screen first, then come back here.";
+    error.hidden = false;
+    return;
+  }
+  try {
+    localStorage.setItem(ACCOUNT_KEY, JSON.stringify({ ...account, pro: true }));
+  } catch {
+    error.textContent = "Couldn't save that — your browser is blocking site storage.";
+    error.hidden = false;
+    return;
+  }
+  document.getElementById("upgrade-body").hidden = true;
+  document.getElementById("upgrade-done").hidden = false;
+});
+
+document.getElementById("btn-return").addEventListener("click", () => {
+  // A script-opened window can close itself; if this page was reached some
+  // other way, fall back to navigating home.
+  window.close();
+  setTimeout(() => { location.href = "/"; }, 120);
+});
+</script>
+</body>
+</html>

@@ -1239,7 +1239,7 @@ function soundBoardHtml() {
         .join("")}</ul>`;
     return `<p class="board-hint">Your three hotkey sounds are below. The full board unlocks every
       universal sound and every sound in your commander's colors.</p>
-      <button class="btn btn-primary upgrade-cta" type="button" data-auth="view-upgrade">See what's included</button>
+      <button class="btn btn-primary upgrade-cta" type="button" data-auth="do-checkout">Upgrade for the full board</button>
       ${sections.join("")}
       <h3>Universal</h3>${locked(SOUND_LIBRARY.universal)}
       ${myIdentityGroups()
@@ -1563,9 +1563,10 @@ const AUTH_VIEWS = {
       <p>Custom sound packs and uploading your own sounds are planned on top of
       this.</p>
       <p class="field-note">Price and checkout aren't set up yet.</p>
+      <button class="btn btn-primary upgrade-cta" type="button" data-auth="do-checkout">Open checkout</button>
       <div class="auth-links">
         <button class="link-btn" type="button" data-auth="do-simulate-upgrade">
-          ${isPro() ? "Turn off" : "Turn on"} upgraded state (for testing)
+          ${isPro() ? "Turn off" : "Turn on"} upgraded state (without checkout)
         </button>
         <button class="link-btn" type="button" data-auth="view-account">Back</button>
       </div>`,
@@ -1672,6 +1673,31 @@ function setAccount(next) {
   renderSoundboard();
 }
 
+// Checkout gets its own window so the game keeps its socket and its seat at
+// the table. The upgrade page writes the flag on the same origin, which fires
+// a storage event back here — the same shape the real Stripe return will take.
+function openCheckout() {
+  const win = window.open("/upgrade.html", "mtge-upgrade", "width=460,height=720");
+  if (!win) {
+    // Popup blocked — navigating there still works, it just loses the game
+    // screen until they come back.
+    location.href = "/upgrade.html";
+  }
+}
+
+window.addEventListener("storage", (e) => {
+  if (e.key !== ACCOUNT_KEY) return;
+  account = readJson(ACCOUNT_KEY, null);
+  renderLoginButton();
+  renderHomeFavorites();
+  renderFavButton();
+  renderSoundboard();
+  // If the sound board is open, redraw it so the unlock is immediate.
+  if (modalBody.classList.contains("sound-board") && !modalBackdrop.hidden) {
+    modalBody.innerHTML = soundBoardHtml();
+  }
+});
+
 function renderLoginButton() {
   const btn = $("#btn-login");
   if (!btn) return;
@@ -1736,6 +1762,11 @@ modalBody.addEventListener("click", (e) => {
     $("#auth-password").value = "";
     $("#auth-confirm").value = "";
     return openAuth("signin");
+  }
+
+  if (action === "do-checkout") {
+    openCheckout();
+    return closeModal();
   }
 
   if (action === "do-logout") {
