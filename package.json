@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "build:commanders": "node scripts/build-commanders.js"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

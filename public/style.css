@@ -518,3 +518,6 @@ body {
 }
 
 .field-note.warn { color: var(--accent); }
+.field-note.error { color: var(--danger); margin-top: 8px; }
+
+.suggestion-pips { display: flex; gap: 3px; flex-shrink: 0; }

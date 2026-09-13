@@ -466,26 +466,119 @@ colorInputs.forEach((input) => {
       if (colorless) colorless.checked = false;
     }
   });
+  // Any manual change re-checks against the resolved commander's identity.
+  input.addEventListener("change", checkIdentityMismatch);
 });
 
-// ---------- commander autocomplete (Scryfall, browser-side) ----------
-// Scryfall blocks Cloudflare Worker IPs, so these fetches must come from the
-// player's own browser — never proxy them through the Worker.
+// ---------- commander autocomplete ----------
+// Autocomplete runs against a bundled snapshot of every Commander-legal
+// commander (public/commanders.json, rebuilt by scripts/build-commanders.js).
+//
+// Why not filter Scryfall live: /cards/autocomplete takes only a name
+// fragment — passing search syntax returns zero results — and the
+// /cards/search that *can* filter by is:commander returns full card objects,
+// ~950KB for one page of a two-letter query. The snapshot is ~100KB fetched
+// once, carries color identity, and needs no network per keystroke.
+//
+// Live Scryfall stays as the fallback for a name the snapshot doesn't have
+// (a set released since the last build) and for when the file is missing
+// entirely. Those calls must remain browser-side — Scryfall blocks
+// Cloudflare Worker IPs.
 const SCRYFALL_AUTOCOMPLETE = "https://api.scryfall.com/cards/autocomplete";
 const SCRYFALL_NAMED = "https://api.scryfall.com/cards/named";
-const SUGGEST_DEBOUNCE_MS = 250;
+const SUGGEST_DEBOUNCE_MS = 120;
 const SUGGEST_MIN_CHARS = 2;
+const SUGGEST_LIMIT = 8;
 
 const commanderInput = $("#input-commander");
 const suggestionList = $("#commander-suggestions");
 const commanderNote = $("#commander-note");
+const identityWarning = $("#identity-warning");
 
+let commanderIndex = null;
+let commanderIndexState = "idle"; // idle | loading | ready | failed
 let suggestDebounce = null;
 let suggestController = null;
 let lookupController = null;
-let suggestions = [];
+let suggestions = []; // [{ name, ci }] — ci is null when it came from live Scryfall
 let activeSuggestion = -1;
-let lastResolvedName = null;
+
+// The color identity of the commander we last resolved, as a canonical WUBRG
+// string ("" means colorless). null means no commander is resolved, so there's
+// nothing to warn against.
+let expectedIdentity = null;
+let expectedCommanderName = null;
+
+async function loadCommanderIndex() {
+  if (commanderIndexState === "ready" || commanderIndexState === "loading") return;
+  commanderIndexState = "loading";
+  try {
+    const res = await fetch("/commanders.json", { headers: { Accept: "application/json" } });
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    commanderIndex = data.commanders.map((row) => {
+      const sep = row.lastIndexOf("|");
+      const name = row.slice(0, sep);
+      return { name, ci: row.slice(sep + 1), lower: name.toLowerCase() };
+    });
+    commanderIndexState = "ready";
+  } catch {
+    // Not built yet, or failed to load — live Scryfall covers for it.
+    commanderIndexState = "failed";
+  }
+}
+
+function searchCommanders(query) {
+  const q = query.toLowerCase();
+  const starts = [];
+  const contains = [];
+  for (const entry of commanderIndex) {
+    const at = entry.lower.indexOf(q);
+    if (at === 0) starts.push(entry);
+    else if (at > 0) contains.push(entry);
+  }
+  return starts.concat(contains).slice(0, SUGGEST_LIMIT);
+}
+
+// ---------- color identity helpers ----------
+const WUBRG = ["W", "U", "B", "R", "G"];
+
+function identityLabel(ci) {
+  return ci === "" ? "colorless" : ci;
+}
+
+// Canonical WUBRG-ordered string for whatever is currently ticked.
+// "" means colorless, matching Scryfall's empty color_identity array.
+function currentIdentity() {
+  const picked = colorInputs.filter((i) => i.checked).map((i) => i.value);
+  if (picked.includes("C")) return "";
+  return WUBRG.filter((c) => picked.includes(c)).join("");
+}
+
+// Advisory only — never resets the player's toggles. Someone may legitimately
+// want an off-identity soundboard, but silently drifting off your commander's
+// colors would break the downstream color-identity sound mapping.
+function checkIdentityMismatch() {
+  if (expectedIdentity === null) {
+    identityWarning.hidden = true;
+    return;
+  }
+  if (currentIdentity() === expectedIdentity) {
+    identityWarning.hidden = true;
+    return;
+  }
+  identityWarning.textContent =
+    `${expectedCommanderName} is ${identityLabel(expectedIdentity)} — this doesn't match its color identity.`;
+  identityWarning.hidden = false;
+}
+
+function pipsHtml(ci) {
+  if (ci === null) return "";
+  const letters = ci === "" ? ["C"] : ci.split("");
+  return `<span class="suggestion-pips">${letters
+    .map((c) => `<span class="color-dot color-${c.toLowerCase()}"></span>`)
+    .join("")}</span>`;
+}
 
 function setNote(text, warn = false) {
   if (!text) {
@@ -498,6 +591,24 @@ function setNote(text, warn = false) {
   commanderNote.hidden = false;
 }
 
+// Single place where a resolved commander lands, whichever source found it.
+function applyCommander(name, ci) {
+  expectedCommanderName = name;
+  expectedIdentity = ci;
+  commanderInput.value = name.slice(0, 40);
+  setColorIdentity(ci === "" ? [] : ci.split(""));
+  setNote(`${identityLabel(ci)} — colors set from ${name}.`);
+  checkIdentityMismatch();
+}
+
+function clearCommanderResolution() {
+  expectedIdentity = null;
+  expectedCommanderName = null;
+  setNote("");
+  identityWarning.hidden = true;
+}
+
+// ---------- suggestion list ----------
 function closeSuggestions() {
   suggestions = [];
   activeSuggestion = -1;
@@ -513,16 +624,30 @@ function renderSuggestions() {
   }
   suggestionList.innerHTML = suggestions
     .map(
-      (name, i) =>
+      (entry, i) =>
         `<li role="option" data-index="${i}" aria-selected="${i === activeSuggestion}">` +
-        `<span class="suggestion-name">${escapeHtml(name)}</span></li>`
+        `<span class="suggestion-name">${escapeHtml(entry.name)}</span>${pipsHtml(entry.ci)}</li>`
     )
     .join("");
   suggestionList.hidden = false;
   commanderInput.setAttribute("aria-expanded", "true");
 }
 
-async function fetchSuggestions(query) {
+async function updateSuggestions(query) {
+  if (commanderIndexState === "idle" || commanderIndexState === "loading") {
+    await loadCommanderIndex();
+  }
+  if (commanderIndexState === "ready") {
+    suggestions = searchCommanders(query);
+    activeSuggestion = -1;
+    renderSuggestions();
+    return;
+  }
+  await fetchLiveSuggestions(query);
+}
+
+// Fallback path: unfiltered Scryfall names, no color pips until one is picked.
+async function fetchLiveSuggestions(query) {
   suggestController?.abort();
   suggestController = new AbortController();
   try {
@@ -532,21 +657,16 @@ async function fetchSuggestions(query) {
     );
     if (!res.ok) return;
     const data = await res.json();
-    suggestions = (data.data || []).slice(0, 8);
+    suggestions = (data.data || []).slice(0, SUGGEST_LIMIT).map((name) => ({ name, ci: null }));
     activeSuggestion = -1;
     renderSuggestions();
   } catch (err) {
-    if (err.name !== "AbortError") {
-      // Offline or Scryfall down — autocomplete is a convenience, not a
-      // requirement. The player can always type the name and set colors by hand.
-      closeSuggestions();
-    }
+    if (err.name !== "AbortError") closeSuggestions();
   }
 }
 
-// Pulls the real card so we can auto-set color identity. `color_identity` is
-// always top-level, even on double-faced cards, so no card_faces handling needed.
-async function resolveCommander(name) {
+// Live exact lookup — for a name the snapshot doesn't carry.
+async function resolveCommanderLive(name) {
   lookupController?.abort();
   lookupController = new AbortController();
   setNote("Checking colors…");
@@ -560,15 +680,9 @@ async function resolveCommander(name) {
       return;
     }
     const card = await res.json();
-    lastResolvedName = card.name;
-    commanderInput.value = card.name.slice(0, 40);
-    setColorIdentity(card.color_identity);
-
-    const identity = card.color_identity.length ? card.color_identity.join("") : "Colorless";
+    applyCommander(card.name, card.color_identity.join(""));
     if (card.legalities?.commander !== "legal") {
-      setNote(`${identity} — not Commander-legal, but colors are set.`, true);
-    } else {
-      setNote(`${identity} — colors set from ${card.name}.`);
+      setNote(`${identityLabel(card.color_identity.join(""))} — ${card.name} isn't Commander-legal, but colors are set.`, true);
     }
   } catch (err) {
     if (err.name !== "AbortError") setNote("Couldn't reach Scryfall — set colors by hand.", true);
@@ -576,34 +690,48 @@ async function resolveCommander(name) {
 }
 
 function chooseSuggestion(index) {
-  const name = suggestions[index];
-  if (!name) return;
-  commanderInput.value = name.slice(0, 40);
+  const entry = suggestions[index];
+  if (!entry) return;
   closeSuggestions();
-  resolveCommander(name);
+  if (entry.ci !== null) applyCommander(entry.name, entry.ci);
+  else resolveCommanderLive(entry.name);
 }
+
+// A name typed in full without picking from the list: check the snapshot
+// first, then fall back to a live lookup.
+function resolveTypedName(typed) {
+  if (commanderIndexState === "ready") {
+    const hit = commanderIndex.find((e) => e.lower === typed.toLowerCase());
+    if (hit) {
+      applyCommander(hit.name, hit.ci);
+      return;
+    }
+  }
+  resolveCommanderLive(typed);
+}
+
+// ---------- wiring ----------
+commanderInput.addEventListener("focus", loadCommanderIndex);
 
 commanderInput.addEventListener("input", () => {
   const query = commanderInput.value.trim();
-  if (query !== lastResolvedName) setNote("");
+  if (query !== expectedCommanderName) clearCommanderResolution();
   clearTimeout(suggestDebounce);
   if (query.length < SUGGEST_MIN_CHARS) {
     suggestController?.abort();
     closeSuggestions();
     return;
   }
-  suggestDebounce = setTimeout(() => fetchSuggestions(query), SUGGEST_DEBOUNCE_MS);
+  suggestDebounce = setTimeout(() => updateSuggestions(query), SUGGEST_DEBOUNCE_MS);
 });
 
 commanderInput.addEventListener("keydown", (e) => {
   if (suggestionList.hidden) {
-    // Enter on a typed-but-unpicked name still resolves its colors, rather
-    // than submitting the lobby form with no color identity set.
     if (e.key === "Enter" && commanderInput.value.trim().length >= SUGGEST_MIN_CHARS) {
       const typed = commanderInput.value.trim();
-      if (typed !== lastResolvedName) {
+      if (typed !== expectedCommanderName) {
         e.preventDefault();
-        resolveCommander(typed);
+        resolveTypedName(typed);
       }
     }
     return;
