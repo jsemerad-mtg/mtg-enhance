@@ -229,14 +229,6 @@ body {
   color: var(--text);
 }
 
-.host-badge {
-  font-size: 0.75rem;
-  color: var(--accent);
-  border: 1px solid var(--accent-dim);
-  padding: 4px 10px;
-  border-radius: 999px;
-}
-
 .self-panel {
   background: var(--panel-raised);
   border: 1px solid var(--hairline);
@@ -1012,3 +1004,101 @@ body {
   line-height: 1.6;
 }
 .upgrade-list li { margin-bottom: 6px; }
+
+
+/* ---------- One-screen game layout ----------
+   Everything below trims vertical space so the game screen fits a phone
+   without scrolling: the life panel, the board and the opponents all have to
+   be reachable without losing sight of the life totals. */
+
+#screen-game { padding-bottom: 8px; }
+
+.game-header { margin-bottom: 12px; gap: 8px; }
+.code-box { padding: 5px 12px; }
+.join-code-small { font-size: 1.05rem; }
+
+.self-panel { padding: 12px 14px 14px; }
+.self-commander { margin: -4px 0 8px; }
+.life-row { margin: 2px 0 0; }
+
+.pass-turn-btn {
+  display: inline-block;
+  width: auto;
+  margin: 12px auto 0;
+  padding: 8px 20px;
+  font-size: 0.85rem;
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+.pass-turn-btn:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+
+.opponents { gap: 8px; }
+.opponent-row { padding: 8px 10px; }
+.opponent-commander { font-size: 0.72rem; }
+
+.soundboard { gap: 8px; margin: 12px 0; }
+.icon-btn { padding: 9px 4px; }
+.icon-btn .icon { width: 20px; height: 20px; }
+.icon-caption { font-size: 0.68rem; }
+
+.life-event-panel { padding: 10px; }
+.life-event-columns {
+  grid-template-columns: 0.92fr 0.82fr 1fr 48px 38px;
+  gap: 5px;
+  margin-bottom: 0;
+}
+.toggle-col { gap: 5px; }
+.toggle-btn { padding: 7px 2px; font-size: 0.7rem; }
+.number-wheel { height: 106px; }
+
+/* Send sits vertically beside the wheel, which buys back a whole button row. */
+.send-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #201705;
+  border: none;
+  border-radius: 8px;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0;
+}
+.send-btn span {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  letter-spacing: 0.08em;
+}
+.send-btn:active { filter: brightness(0.92); }
+
+.toggle-btn.is-empty { opacity: 0.35; cursor: default; }
+
+/* The generous page padding is right for the home and lobby screens, but it's
+   the last 50-odd pixels standing between the game screen and fitting a 667px
+   phone. Trim it only while the game is showing. */
+#app:has(#screen-game:not([hidden])) {
+  padding-top: 14px;
+  padding-bottom: 10px;
+}
+
+/* Grid items default to min-width:auto, so a long commander name widens the
+   column past its 1fr share and the second card spills off the screen. */
+.opponent-row { min-width: 0; }
+.opponent-life { flex-shrink: 0; }
+
+/* ---------- Join PIN ---------- */
+
+.pin-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.pin-toggle input { accent-color: var(--accent); width: 17px; height: 17px; }
+
+.pin-input { max-width: 120px; }

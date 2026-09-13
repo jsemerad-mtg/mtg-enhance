@@ -139,12 +139,9 @@ function render() {
   selfCommander.textContent = self.commanderName || "";
   selfCommander.hidden = !self.commanderName;
   if (self.commanderName) selfCommander.dataset.commander = self.commanderName;
-  const badge = $("#host-badge");
-  badge.hidden = !self.isHost;
-  badge.textContent =
-    session.mode === "remote"
-      ? "Remote — sounds on all devices"
-      : "Local — sounds play here";
+  // The mode now reads off the code label instead of a separate badge, and
+  // it shows for everyone rather than only the host.
+  $("#code-label").textContent = session.mode === "remote" ? "Remote game code" : "Local game code";
 
   const allPlayers = Object.values(session.players);
   const opponents = allPlayers.filter((p) => p.id !== selfId);
@@ -179,29 +176,40 @@ function render() {
 }
 
 function renderTargetToggles(opponents) {
-  const options = [
+  // Two columns rather than one long list: the group options, then a seat per
+  // opponent. Splitting them keeps the panel three rows tall instead of six,
+  // which is what makes the whole screen fit a small phone — and it puts the
+  // single-opponent targets somewhere obvious.
+  const groups = [
     { value: "all", label: "All players" },
-    { value: "opponents", label: "Each opponent" },
+    { value: "opponents", label: "Each opp" },
     { value: selfId, label: "Me" },
-    ...opponents.map((p) => ({ value: p.id, label: p.displayName })),
   ];
-  if (!options.some((o) => o.value === selectedTargetValue)) {
+  const seats = opponents.map((p) => ({ value: p.id, label: p.displayName.split(" ")[0] }));
+  // Empty seats keep the column a constant height as people join and leave.
+  for (let i = seats.length; i < 3; i++) {
+    seats.push({ value: `empty-${i}`, label: `Player ${i + 2}`, empty: true });
+  }
+
+  if (![...groups, ...seats].some((o) => o.value === selectedTargetValue && !o.empty)) {
     selectedTargetValue = "opponents";
   }
 
-  const container = $("#target-toggle-group");
-  container.innerHTML = options
-    .map(
-      (o) =>
-        `<button type="button" class="toggle-btn${o.value === selectedTargetValue ? " active" : ""}" data-value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</button>`
-    )
-    .join("");
-  container.querySelectorAll(".toggle-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      selectedTargetValue = btn.dataset.value;
-      renderTargetToggles(opponents);
+  const button = (o) =>
+    `<button type="button" class="toggle-btn${o.value === selectedTargetValue ? " active" : ""}` +
+    `${o.empty ? " is-empty" : ""}" data-value="${escapeHtml(o.value)}"${o.empty ? " disabled" : ""}>` +
+    `${escapeHtml(o.label)}</button>`;
+
+  $("#target-toggle-group").innerHTML = groups.map(button).join("");
+  $("#player-toggle-group").innerHTML = seats.map(button).join("");
+
+  document.querySelectorAll("#target-toggle-group .toggle-btn, #player-toggle-group .toggle-btn")
+    .forEach((btn) => {
+      btn.addEventListener("click", () => {
+        selectedTargetValue = btn.dataset.value;
+        renderTargetToggles(opponents);
+      });
     });
-  });
   updateKindLabels();
 }
 
@@ -229,6 +237,14 @@ function escapeHtml(str) {
 
 // ---------- WebSocket ----------
 function connectAndJoin(joinCode, lobbyInfo) {
+  // Guard rather than throw: reaching the lobby form without a pending code
+  // shouldn't leave a blank game screen with a dead socket behind it.
+  if (!joinCode) {
+    showScreen("home");
+    $("#home-error").textContent = "That game code was lost — pick a game again.";
+    $("#home-error").hidden = false;
+    return;
+  }
   code = joinCode.toUpperCase();
   pendingLobbyInfo = lobbyInfo;
   const stored = loadStored(code) || {};
@@ -245,6 +261,7 @@ function connectAndJoin(joinCode, lobbyInfo) {
         displayName: lobbyInfo.displayName ?? stored.displayName,
         commanderName: lobbyInfo.commanderName ?? stored.commanderName,
         colorIdentity: lobbyInfo.colorIdentity ?? stored.colorIdentity,
+        pin: lobbyInfo.pin ?? null,
       })
     );
   });
@@ -323,6 +340,16 @@ function connectAndJoin(joinCode, lobbyInfo) {
         break;
       }
       case "error": {
+        if (msg.code === "bad_pin") {
+          leftGame = true; // don't reconnect into a rejection loop
+          ws.close();
+          showScreen("lobby");
+          $("#lobby-error").textContent = msg.message;
+          $("#lobby-error").hidden = false;
+          $("#join-pin-field").hidden = false;
+          setTimeout(() => { leftGame = false; }, 0);
+          break;
+        }
         console.warn("Server error:", msg.message);
         break;
       }
@@ -369,20 +396,35 @@ function showCooldown(soundId, remainingMs) {
 // ---------- screen wiring ----------
 let pendingCode = null;
 
+function hostPin() {
+  if (!$("#input-pin-required").checked) return null;
+  const value = $("#input-host-pin").value.trim();
+  return /^\d{4}$/.test(value) ? value : null;
+}
+
 document.querySelectorAll(".btn-mode").forEach((btn) => {
   btn.addEventListener("click", async () => {
     ensureAudio();
     $("#home-error").hidden = true;
+    if ($("#input-pin-required").checked && !hostPin()) {
+      $("#home-error").textContent = "Enter a 4-digit PIN, or switch the PIN off.";
+      $("#home-error").hidden = false;
+      return;
+    }
     btn.disabled = true;
     try {
       const res = await fetch("/api/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: btn.dataset.mode }),
+        body: JSON.stringify({ mode: btn.dataset.mode, pin: hostPin() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not create a game");
+      const pin = hostPin();
       enterLobby(data.code);
+      // The host just chose this PIN; making them retype it to sit down at
+      // their own table is pure friction.
+      if (pin) $("#input-join-pin").value = pin;
     } catch (err) {
       $("#home-error").textContent = err.message;
       $("#home-error").hidden = false;
@@ -417,7 +459,21 @@ function enterLobby(joinCode) {
   }
 
   $("#lobby-code").textContent = joinCode;
+  $("#lobby-error").hidden = true;
   showScreen("lobby");
+
+  // Ask the Worker whether this table wants a PIN, so the field appears
+  // before they fill anything in rather than after a rejected join.
+  $("#join-pin-field").hidden = true;
+  fetch(`/api/session/${encodeURIComponent(joinCode)}`)
+    .then((r) => r.json())
+    .then((info) => {
+      $("#join-pin-field").hidden = !info.pinRequired;
+    })
+    .catch(() => {
+      // Offline or the probe failed — leave the field hidden; a wrong or
+      // missing PIN is still caught on join.
+    });
 
   // A favorite tapped on the home screen fills the commander in for you.
   const preselect = readJson(PRESELECT_KEY, null);
@@ -434,8 +490,15 @@ $("#form-lobby").addEventListener("submit", (e) => {
   const commanderName = $("#input-commander").value.trim();
   const colorIdentity = Array.from(document.querySelectorAll(".color-toggle input:checked")).map((el) => el.value);
 
+  const pin = $("#input-join-pin").value.trim();
+  if (!$("#join-pin-field").hidden && !/^\d{4}$/.test(pin)) {
+    $("#lobby-error").textContent = "This table needs its 4-digit PIN.";
+    $("#lobby-error").hidden = false;
+    return;
+  }
+  $("#lobby-error").hidden = true;
   showScreen("game");
-  connectAndJoin(pendingCode, { displayName, commanderName, colorIdentity });
+  connectAndJoin(pendingCode, { displayName, commanderName, colorIdentity, pin });
 });
 
 // Life total controls
@@ -1313,8 +1376,34 @@ function renderTurnControls() {
 }
 
 $("#btn-pass-turn").addEventListener("click", () => {
-  ensureAudio();
-  sendMessage({ type: "pass_turn" });
+  // Easy to hit by accident beside the life buttons, and passing out of turn
+  // can't be taken back without the whole table re-passing.
+  const next = nextPlayerName();
+  openModal(
+    "Pass turn",
+    `<p>Hand the turn to <strong>${escapeHtml(next)}</strong>?</p>
+     <div class="player-menu">
+       <button class="btn btn-primary" type="button" data-confirm="pass">Pass turn</button>
+       <button class="btn btn-secondary" type="button" data-confirm="cancel">Not yet</button>
+     </div>`
+  );
+});
+
+function nextPlayerName() {
+  const order = session.turnOrder.filter((id) => session.players[id]);
+  const at = order.indexOf(selfId);
+  if (at === -1 || order.length < 2) return "the next player";
+  return session.players[order[(at + 1) % order.length]]?.displayName || "the next player";
+}
+
+modalBody.addEventListener("click", (e) => {
+  const choice = e.target.closest("[data-confirm]")?.dataset.confirm;
+  if (!choice) return;
+  if (choice === "pass") {
+    ensureAudio();
+    sendMessage({ type: "pass_turn" });
+  }
+  closeModal();
 });
 
 // ---------- opponent menu ----------
@@ -1784,3 +1873,18 @@ modalBody.addEventListener("click", (e) => {
 $("#btn-login").addEventListener("click", () => openAuth());
 renderLoginButton();
 renderHomeFavorites();
+
+// ---------- join PIN ----------
+$("#input-pin-required").addEventListener("change", (e) => {
+  const input = $("#input-host-pin");
+  input.hidden = !e.target.checked;
+  if (e.target.checked) input.focus();
+  else input.value = "";
+});
+
+$("#input-host-pin").addEventListener("input", (e) => {
+  e.target.value = e.target.value.replace(/\D/g, "").slice(0, 4);
+});
+$("#input-join-pin").addEventListener("input", (e) => {
+  e.target.value = e.target.value.replace(/\D/g, "").slice(0, 4);
+});

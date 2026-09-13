@@ -25,9 +25,14 @@ export default {
       // but it has to be fixed before anyone joins, so it's chosen by the host
       // at creation and claimed with the code.
       let mode = "colocated";
+      let pin = null;
       try {
         const body = await request.json();
         if (body?.mode === "remote") mode = "remote";
+        // Optional 4-digit PIN. A 4-character code alone is guessable enough
+        // that a bored stranger can wander into a game; the PIN makes that
+        // impractical without making the common case slower.
+        if (typeof body?.pin === "string" && /^\d{4}$/.test(body.pin)) pin = body.pin;
       } catch {
         // No body — colocated is the safe default (sounds stay on one device).
       }
@@ -42,7 +47,7 @@ export default {
         // instant can no longer be handed the same code.
         const res = await stub.fetch("https://internal/claim", {
           method: "POST",
-          body: JSON.stringify({ code: candidate, mode }),
+          body: JSON.stringify({ code: candidate, mode, pin }),
         });
         const { claimed } = await res.json();
         if (claimed) {
@@ -56,7 +61,16 @@ export default {
           { status: 503 }
         );
       }
-      return Response.json({ code, mode });
+      return Response.json({ code, mode, pinRequired: pin !== null });
+    }
+
+    // Asked by the lobby before connecting, so a joiner is prompted for a PIN
+    // up front rather than being bounced after a failed WebSocket join.
+    if (url.pathname.startsWith("/api/session/")) {
+      const code = url.pathname.split("/")[3]?.toUpperCase();
+      if (!code || code.length !== 4) return Response.json({ exists: false }, { status: 400 });
+      const stub = env.GAME_SESSION.get(env.GAME_SESSION.idFromName(code));
+      return stub.fetch("https://internal/info");
     }
 
     // Player taps "Join" with a code, or the host's own client connects

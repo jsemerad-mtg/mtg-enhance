@@ -33,10 +33,12 @@ function checkCooldown(state, soundId, key) {
   return { ok: true };
 }
 
-function initialState(sessionId, mode = "colocated") {
+function initialState(sessionId, mode = "colocated", pin = null) {
   return {
     sessionId,
     mode: mode === "remote" ? "remote" : "colocated",
+    // Never leaves the Durable Object — see publicState().
+    pin: typeof pin === "string" && /^\d{4}$/.test(pin) ? pin : null,
     players: {}, // playerId -> PlayerState
     hostId: null,
     ambientActivePlayerId: null,
@@ -87,6 +89,13 @@ export class GameSession extends DurableObject {
     }
   }
 
+  // state_sync goes to every connected client, so the PIN has to be stripped
+  // before it ever goes out on the wire.
+  publicState() {
+    const { pin, ...rest } = this.sessionState;
+    return { ...rest, pinRequired: pin !== null };
+  }
+
   async persist() {
     await this.ctx.storage.put("state", this.sessionState);
   }
@@ -104,10 +113,18 @@ export class GameSession extends DurableObject {
     // Take this join code if nothing holds it yet, recording the host's
     // chosen mode. Returns claimed:false when the code is already in use so
     // the Worker can try another one.
+    if (url.pathname === "/info") {
+      return Response.json({
+        exists: !!this.sessionState,
+        pinRequired: !!this.sessionState?.pin,
+        mode: this.sessionState?.mode ?? null,
+      });
+    }
+
     if (url.pathname === "/claim") {
       if (this.sessionState) return Response.json({ claimed: false });
       const body = await request.json().catch(() => ({}));
-      this.sessionState = initialState(body.code || this.ctx.id.toString(), body.mode);
+      this.sessionState = initialState(body.code || this.ctx.id.toString(), body.mode, body.pin);
       await this.persist();
       return Response.json({ claimed: true, mode: this.sessionState.mode });
     }
@@ -190,6 +207,15 @@ export class GameSession extends DurableObject {
     switch (msg.type) {
       case "join": {
         const existing = msg.playerId ? this.sessionState.players[msg.playerId] : null;
+
+        // Someone already holding a seat is reconnecting, not joining, so
+        // they aren't asked for the PIN again — their player id is a UUID
+        // they can only have got by being let in once already.
+        if (this.sessionState.pin && !existing && msg.pin !== this.sessionState.pin) {
+          ws.send(JSON.stringify({ type: "error", code: "bad_pin", message: "That PIN doesn't match." }));
+          return;
+        }
+
         let playerId;
 
         if (existing) {
@@ -224,7 +250,7 @@ export class GameSession extends DurableObject {
         // Tell this client its assigned playerId (new joins only need
         // this, but sending it on reconnect too keeps the client simple).
         ws.send(JSON.stringify({ type: "joined", playerId }));
-        this.broadcast({ type: "state_sync", state: this.sessionState });
+        this.broadcast({ type: "state_sync", state: this.publicState() });
         break;
       }
 
@@ -405,7 +431,7 @@ export class GameSession extends DurableObject {
         // table can see who won't hear their sound effects.
         player.muted = !!msg.muted;
         await this.persist();
-        this.broadcast({ type: "state_sync", state: this.sessionState });
+        this.broadcast({ type: "state_sync", state: this.publicState() });
         break;
       }
 
@@ -456,7 +482,7 @@ export class GameSession extends DurableObject {
         const idx = order.indexOf(stayActive);
         this.sessionState.activePlayerIndex = idx === -1 ? 0 : idx;
         await this.persist();
-        this.broadcast({ type: "state_sync", state: this.sessionState });
+        this.broadcast({ type: "state_sync", state: this.publicState() });
         break;
       }
 
@@ -473,7 +499,7 @@ export class GameSession extends DurableObject {
       // Their seat, life total, commander and place in the rotation all stay —
       // closing a browser is a disconnect, not leaving the table.
       await this.persist();
-      this.broadcast({ type: "state_sync", state: this.sessionState });
+      this.broadcast({ type: "state_sync", state: this.publicState() });
     }
   }
 

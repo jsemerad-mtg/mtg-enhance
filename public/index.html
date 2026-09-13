@@ -34,6 +34,13 @@
     </div>
 
     <div class="stack">
+      <label class="pin-toggle">
+        <input id="input-pin-required" type="checkbox" />
+        <span>Require a PIN to join</span>
+      </label>
+      <input id="input-host-pin" class="code-input pin-input" type="text" inputmode="numeric"
+             maxlength="4" placeholder="PIN" autocomplete="off" hidden />
+
       <button id="btn-host-local" class="btn btn-primary btn-mode" data-mode="colocated">
         <span class="btn-mode-title">Host a local game</span>
         <span class="btn-mode-sub">Everyone's at one table — music and board wipes play on your device only</span>
@@ -75,6 +82,11 @@
     <p id="lobby-code" class="join-code"></p>
 
     <form id="form-lobby" class="lobby-form">
+      <label class="field" id="join-pin-field" hidden>
+        <span>Table PIN</span>
+        <input id="input-join-pin" type="text" inputmode="numeric" maxlength="4" autocomplete="off" />
+      </label>
+
       <label class="field">
         <span>Your name</span>
         <input id="input-name" type="text" maxlength="20" required autocomplete="off" />
@@ -115,6 +127,7 @@
         <p id="identity-warning" class="field-note error" role="status" hidden></p>
       </fieldset>
 
+      <p id="lobby-error" class="field-note error" hidden></p>
       <button type="submit" class="btn btn-primary">Sit down at the table</button>
     </form>
   </section>
@@ -123,10 +136,10 @@
   <section id="screen-game" class="screen" hidden>
     <header class="game-header">
       <div class="code-box">
-        <span class="code-label">Game code</span>
+        <span class="code-label" id="code-label">Game code</span>
         <span class="join-code-small" id="game-code"></span>
       </div>
-      <span id="host-badge" class="host-badge" hidden></span>
+      <button id="btn-turn-order" class="btn-ghost btn-ghost-sm" type="button" hidden>Turn order</button>
       <div class="header-actions">
         <span id="conn-status" class="conn-status" role="status" hidden></span>
         <button id="btn-mute" class="header-icon" type="button" aria-pressed="false" aria-label="Mute all sounds"></button>
@@ -145,12 +158,9 @@
         <span class="life-total" id="self-life">40</span>
         <button class="life-btn" data-delta="1">+1</button>
       </div>
-      <button id="btn-pass-turn" class="btn btn-primary pass-turn-btn" type="button" hidden>Pass turn</button>
+      <button id="btn-pass-turn" class="btn pass-turn-btn" type="button" hidden>Pass turn</button>
     </div>
 
-    <div class="opponents-head">
-      <button id="btn-turn-order" class="btn-ghost btn-ghost-sm" type="button" hidden>Edit turn order</button>
-    </div>
     <div id="opponents" class="opponents"></div>
 
     <div id="soundboard" class="soundboard"></div>
@@ -158,6 +168,7 @@
     <div class="life-event-panel">
       <div class="life-event-columns">
         <div class="toggle-col" id="target-toggle-group"></div>
+        <div class="toggle-col" id="player-toggle-group"></div>
         <div class="toggle-col" id="kind-toggle-group">
           <button type="button" class="toggle-btn" data-value="gain">Gains Life</button>
           <button type="button" class="toggle-btn" data-value="loss">Loses Life</button>
@@ -166,8 +177,10 @@
         <div class="wheel-col">
           <div class="number-wheel" id="wheel-amount"></div>
         </div>
+        <button id="btn-apply-life-event" class="send-btn" type="button">
+          <span>Send</span>
+        </button>
       </div>
-      <button id="btn-apply-life-event" class="btn btn-primary apply-btn">Apply</button>
     </div>
   </section>
 
