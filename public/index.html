@@ -65,10 +65,7 @@
 
     <section class="favorites">
       <h2 class="section-heading">Favorites</h2>
-      <p class="empty-state">
-        Save the commanders you play most and they'll show up here for one-tap setup.
-        Needs an account — coming soon.
-      </p>
+      <div id="favorites-list"></div>
     </section>
   </section>
 
@@ -102,6 +99,7 @@
           <ul id="commander-suggestions" class="suggestions" role="listbox" hidden></ul>
         </div>
         <p id="commander-note" class="field-note" hidden></p>
+        <button id="btn-fav-commander" class="btn-ghost btn-ghost-sm fav-btn" type="button" hidden></button>
       </div>
 
       <fieldset class="field colors-field">

@@ -885,3 +885,117 @@ body {
   cursor: pointer;
 }
 .order-actions button:disabled { opacity: 0.3; cursor: default; }
+
+/* ---------- Account ---------- */
+
+.auth-form { display: flex; flex-direction: column; gap: 14px; margin-top: 4px; }
+.auth-form .field input { width: 100%; }
+.auth-form .btn { width: 100%; }
+
+.auth-links {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 6px;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-family: var(--font-body);
+  font-size: 0.83rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.link-btn:hover { color: var(--text); }
+
+.account-email { margin: -4px 0 14px; font-size: 0.85rem; }
+
+.account-plan {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  margin-bottom: 8px;
+}
+
+.plan-label { color: var(--text); font-size: 0.88rem; font-weight: 600; }
+.btn-sm { padding: 8px 14px; font-size: 0.82rem; }
+.upgrade-cta { width: 100%; margin-bottom: 16px; }
+
+/* ---------- Favourite commanders ---------- */
+
+.fav-list { list-style: none; margin: 0; padding: 0; }
+
+.fav-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  margin-bottom: 6px;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+}
+
+.fav-name { flex: 1; color: var(--text); font-size: 0.88rem; }
+
+.fav-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.fav-remove:hover { color: var(--danger); }
+
+.fav-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+
+.fav-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 13px;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.fav-chip:hover { border-color: var(--accent-dim); }
+.fav-chip.chosen { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--panel)); }
+
+.fav-btn { align-self: flex-start; margin-top: 2px; }
+
+/* ---------- Locked sounds ---------- */
+
+.sound-list.locked .sound-row { opacity: 0.45; }
+
+.is-locked {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px dashed var(--hairline);
+  border-radius: 9px;
+  font-size: 0.88rem;
+  color: var(--text-muted);
+}
+
+.sound-star.is-locked {
+  flex: none;
+  width: 42px;
+  justify-content: center;
+  font-size: 0.85rem;
+}

@@ -418,6 +418,14 @@ function enterLobby(joinCode) {
 
   $("#lobby-code").textContent = joinCode;
   showScreen("lobby");
+
+  // A favorite tapped on the home screen fills the commander in for you.
+  const preselect = readJson(PRESELECT_KEY, null);
+  if (preselect) {
+    const [name, ci] = splitFavorite(preselect);
+    applyCommander(name, ci);
+    try { localStorage.removeItem(PRESELECT_KEY); } catch {}
+  }
 }
 
 $("#form-lobby").addEventListener("submit", (e) => {
@@ -664,6 +672,7 @@ function applyCommander(name, rawCi) {
   setColorIdentity(ci === "" ? [] : ci.split(""));
   setNote(`${identityLabel(ci)} — colors set from ${name}.`);
   checkIdentityMismatch();
+  renderFavButton();
 }
 
 function clearCommanderResolution() {
@@ -671,6 +680,7 @@ function clearCommanderResolution() {
   expectedCommanderName = null;
   setNote("");
   identityWarning.hidden = true;
+  renderFavButton();
 }
 
 // ---------- suggestion list ----------
@@ -903,16 +913,9 @@ const ORACLE_HTML = `
   without telegraphing what you're holding.</p>
 `;
 
-const LOGIN_HTML = `
-  <p class="placeholder-flag">Not built yet — this is a placeholder.</p>
-  <p>Accounts will save your commanders, favorites and custom sound packages
-  across devices. Hosting will need an account; other players will still be
-  able to join as guests with the default sounds.</p>
-`;
-
 $("#btn-help").addEventListener("click", () => openModal("How this works", HELP_HTML));
 $("#btn-oracle").addEventListener("click", () => openModal("Ask the Oracle", ORACLE_HTML));
-$("#btn-login").addEventListener("click", () => openModal("Log in", LOGIN_HTML));
+
 
 // ---------- connection resilience ----------
 // The single most confusing failure this app can have is a socket that died
@@ -1039,7 +1042,7 @@ document.addEventListener("dblclick", (e) => {
 // ---------- sound library ----------
 // Placeholder tones for now — the real audio lands in R2 later. Grouped the
 // way claude/sound-ability-map.md groups them: universal table events, then
-// per-colour mechanics, so a player only sees sounds their identity can use.
+// per-color mechanics, so a player only sees sounds their identity can use.
 const SOUND_LIBRARY = {
   universal: [
     ["combat_damage", "Combat Damage"], ["commander_damage", "Commander Damage"],
@@ -1201,7 +1204,7 @@ $("#soundboard").addEventListener("click", (e) => {
 });
 
 // ---------- full sound board ----------
-// Universal sounds plus whatever this player's colour identity unlocks, so a
+// Universal sounds plus whatever this player's color identity unlocks, so a
 // mono-white commander isn't scrolling past mill and burn to find Wrath.
 const COLOR_NAMES = { W: "White", U: "Blue", B: "Black", R: "Red", G: "Green", C: "Colorless" };
 
@@ -1225,6 +1228,25 @@ function soundBoardHtml() {
   const sections = [];
   const builtinRows = Object.entries(BUILTINS).map(([id, meta]) => soundRow(id, meta.label));
   sections.push(`<h3>Board</h3><ul class="sound-list">${builtinRows.join("")}</ul>`);
+
+  // Free accounts still see what's behind the upgrade — a locked list is a
+  // better pitch than a hidden one — but can't play or star any of it.
+  if (!isPro()) {
+    const locked = (rows) =>
+      `<ul class="sound-list locked">${rows
+        .map(([, label]) => `<li class="sound-row"><span class="sound-play is-locked">${escapeHtml(label)}</span>
+          <span class="sound-star is-locked">🔒</span></li>`)
+        .join("")}</ul>`;
+    return `<p class="board-hint">Your three hotkey sounds are below. The full board unlocks every
+      universal sound and every sound in your commander's colors.</p>
+      <button class="btn btn-primary upgrade-cta" type="button" data-auth="view-upgrade">See what's included</button>
+      ${sections.join("")}
+      <h3>Universal</h3>${locked(SOUND_LIBRARY.universal)}
+      ${myIdentityGroups()
+        .map((c) => `<h3>${COLOR_NAMES[c]}</h3>${locked(SOUND_LIBRARY[c] || [])}`)
+        .join("")}`;
+  }
+
   sections.push(
     `<h3>Universal</h3><ul class="sound-list">${SOUND_LIBRARY.universal.map(([id, l]) => soundRow(id, l)).join("")}</ul>`
   );
@@ -1406,3 +1428,328 @@ function showRejoinBanner() {
   };
 }
 showRejoinBanner();
+
+// ---------- accounts (UI shell) ----------
+// There is no auth backend yet: D1 isn't created and no email provider is
+// chosen, so password reset can't actually send anything. These screens are
+// the real flows against a local stub.
+//
+// The one hard rule here: a password is never stored, anywhere. It's read for
+// validation, checked, and discarded — the "session" below holds a name, an
+// email and a paid flag and nothing else. A login form that looks real but
+// keeps credentials in localStorage is worse than no login form at all,
+// because a tester will type a password they use elsewhere.
+const ACCOUNT_KEY = "mtge:account";
+const FAVORITES_KEY = "mtge:favorites";
+const PRESELECT_KEY = "mtge:preselect";
+const MIN_PASSWORD = 8;
+
+function readJson(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; } catch { return fallback; }
+}
+function writeJson(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
+let account = readJson(ACCOUNT_KEY, null);
+let favorites = readJson(FAVORITES_KEY, []);
+
+const isPro = () => account?.pro === true;
+const emailLooksValid = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+
+const PREVIEW_FLAG = `<p class="placeholder-flag">Preview — not connected yet</p>`;
+
+function authError(message) {
+  const el = $("#auth-error");
+  if (!el) return;
+  el.textContent = message;
+  el.hidden = !message;
+}
+
+function field(id, label, type = "text", extra = "") {
+  return `<label class="field">
+    <span>${escapeHtml(label)}</span>
+    <input id="${id}" type="${type}" autocomplete="off" ${extra} />
+  </label>`;
+}
+
+const AUTH_VIEWS = {
+  signin: () => ({
+    title: "Sign in",
+    body: `${PREVIEW_FLAG}
+      <div class="auth-form">
+        ${field("auth-identifier", "Username or email")}
+        ${field("auth-password", "Password", "password")}
+        <p id="auth-error" class="field-note error" hidden></p>
+        <button class="btn btn-primary" type="button" data-auth="do-signin">Sign in</button>
+        <div class="auth-links">
+          <button class="link-btn" type="button" data-auth="view-forgot">Forgot username or password?</button>
+          <button class="link-btn" type="button" data-auth="view-signup">Create an account</button>
+        </div>
+      </div>`,
+  }),
+
+  signup: () => ({
+    title: "Create account",
+    body: `${PREVIEW_FLAG}
+      <div class="auth-form">
+        ${field("auth-name", "Name or username")}
+        ${field("auth-email", "Email address", "email")}
+        ${field("auth-password", "Password", "password")}
+        ${field("auth-confirm", "Confirm password", "password")}
+        <p class="field-note">At least ${MIN_PASSWORD} characters.</p>
+        <p id="auth-error" class="field-note error" hidden></p>
+        <button class="btn btn-primary" type="button" data-auth="do-signup">Create account</button>
+        <div class="auth-links">
+          <button class="link-btn" type="button" data-auth="view-signin">I already have an account</button>
+        </div>
+      </div>`,
+  }),
+
+  forgot: () => ({
+    title: "Reset your password",
+    body: `${PREVIEW_FLAG}
+      <div class="auth-form">
+        <p class="board-hint">Enter the email on the account and we'll send a six-digit reset code.</p>
+        ${field("auth-email", "Email address", "email")}
+        <p id="auth-error" class="field-note error" hidden></p>
+        <button class="btn btn-primary" type="button" data-auth="do-forgot">Send reset code</button>
+        <div class="auth-links">
+          <button class="link-btn" type="button" data-auth="view-signin">Back to sign in</button>
+        </div>
+      </div>`,
+  }),
+
+  reset: (email) => ({
+    title: "Enter your code",
+    body: `${PREVIEW_FLAG}
+      <div class="auth-form">
+        <p class="board-hint">A six-digit code would be sent to ${escapeHtml(email || "your email")}.
+        Nothing is actually sent yet — no email provider is wired up.</p>
+        ${field("auth-code", "Six-digit code", "text", 'inputmode="numeric" maxlength="6"')}
+        ${field("auth-password", "New password", "password")}
+        ${field("auth-confirm", "Confirm new password", "password")}
+        <p id="auth-error" class="field-note error" hidden></p>
+        <button class="btn btn-primary" type="button" data-auth="do-reset">Set new password</button>
+        <div class="auth-links">
+          <button class="link-btn" type="button" data-auth="view-forgot">Send another code</button>
+        </div>
+      </div>`,
+  }),
+
+  account: () => ({
+    title: account?.name || "Your account",
+    body: `${PREVIEW_FLAG}
+      <p class="account-email">${escapeHtml(account?.email || "")}</p>
+      <div class="account-plan">
+        <span class="plan-label">${isPro() ? "Full soundboard" : "Free — 3 sounds"}</span>
+        ${isPro() ? "" : `<button class="btn btn-primary btn-sm" type="button" data-auth="view-upgrade">Upgrade</button>`}
+      </div>
+
+      <h3>Favorite commanders</h3>
+      ${favoritesEditorHtml()}
+
+      <div class="auth-links">
+        <button class="link-btn" type="button" data-auth="do-logout">Log out</button>
+      </div>`,
+  }),
+
+  upgrade: () => ({
+    title: "Upgrade",
+    body: `${PREVIEW_FLAG}
+      <p>The full soundboard unlocks every universal sound plus every sound in
+      your commander's color identity, lets you star any of them into your
+      three hotkey slots, and saves your favorite commanders.</p>
+      <p>Custom sound packs and uploading your own sounds are planned on top of
+      this.</p>
+      <p class="field-note">Price and checkout aren't set up yet.</p>
+      <div class="auth-links">
+        <button class="link-btn" type="button" data-auth="do-simulate-upgrade">
+          ${isPro() ? "Turn off" : "Turn on"} upgraded state (for testing)
+        </button>
+        <button class="link-btn" type="button" data-auth="view-account">Back</button>
+      </div>`,
+  }),
+};
+
+function openAuth(view = account ? "account" : "signin", arg) {
+  const { title, body } = AUTH_VIEWS[view](arg);
+  openModal(title, body);
+  modalBody.classList.add("auth-modal");
+}
+
+// ---------- favorite commanders ----------
+function favoritesEditorHtml() {
+  if (!isPro()) {
+    return `<p class="empty-state">Saving favorite commanders comes with the full soundboard.</p>`;
+  }
+  if (favorites.length === 0) {
+    return `<p class="empty-state">Star a commander in the lobby and it'll appear here.</p>`;
+  }
+  return `<ul class="fav-list">${favorites
+    .map((entry) => {
+      const [name, ci] = splitFavorite(entry);
+      return `<li class="fav-row">
+        <span class="fav-name">${escapeHtml(name)}</span>
+        ${pipsHtml(ci)}
+        <button type="button" class="fav-remove" data-unfav="${escapeHtml(entry)}" aria-label="Remove ${escapeHtml(name)}">&times;</button>
+      </li>`;
+    })
+    .join("")}</ul>`;
+}
+
+function splitFavorite(entry) {
+  const at = entry.lastIndexOf("|");
+  return at === -1 ? [entry, ""] : [entry.slice(0, at), entry.slice(at + 1)];
+}
+
+function renderHomeFavorites() {
+  const host = $("#favorites-list");
+  if (!host) return;
+  if (!account) {
+    host.innerHTML = `<p class="empty-state">Sign in to save the commanders you play most.</p>`;
+    return;
+  }
+  if (!isPro()) {
+    host.innerHTML = `<p class="empty-state">Favorite commanders come with the full soundboard.</p>`;
+    return;
+  }
+  if (favorites.length === 0) {
+    host.innerHTML = `<p class="empty-state">Star a commander in the lobby and it'll show up here.</p>`;
+    return;
+  }
+  host.innerHTML = `<div class="fav-chips">${favorites
+    .map((entry) => {
+      const [name, ci] = splitFavorite(entry);
+      return `<button type="button" class="fav-chip" data-preselect="${escapeHtml(entry)}">
+        <span>${escapeHtml(name)}</span>${pipsHtml(ci)}</button>`;
+    })
+    .join("")}</div>
+    <p class="field-note">Tap one to use it in your next game.</p>`;
+}
+
+$("#favorites-list").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-preselect]");
+  if (!chip) return;
+  writeJson(PRESELECT_KEY, chip.dataset.preselect);
+  chip.classList.add("chosen");
+  $("#favorites-list").querySelectorAll(".fav-chip").forEach((c) => {
+    if (c !== chip) c.classList.remove("chosen");
+  });
+});
+
+// The lobby's star: only meaningful once a commander has actually resolved,
+// since a favorite without its color identity is no use later.
+function renderFavButton() {
+  const btn = $("#btn-fav-commander");
+  if (!btn) return;
+  const resolved = expectedCommanderName && expectedIdentity !== null;
+  btn.hidden = !(resolved && isPro());
+  if (btn.hidden) return;
+  const entry = `${expectedCommanderName}|${expectedIdentity}`;
+  btn.textContent = favorites.includes(entry) ? "★ Saved to favorites" : "☆ Save to favorites";
+  btn.dataset.entry = entry;
+}
+
+$("#btn-fav-commander").addEventListener("click", () => {
+  const entry = $("#btn-fav-commander").dataset.entry;
+  if (!entry) return;
+  favorites = favorites.includes(entry) ? favorites.filter((f) => f !== entry) : [...favorites, entry];
+  writeJson(FAVORITES_KEY, favorites);
+  renderFavButton();
+  renderHomeFavorites();
+});
+
+// ---------- auth actions ----------
+let resetEmail = "";
+
+function setAccount(next) {
+  account = next;
+  writeJson(ACCOUNT_KEY, account);
+  renderLoginButton();
+  renderHomeFavorites();
+  renderFavButton();
+  renderSoundboard();
+}
+
+function renderLoginButton() {
+  const btn = $("#btn-login");
+  if (!btn) return;
+  btn.textContent = account ? account.name : "Log in";
+}
+
+modalBody.addEventListener("click", (e) => {
+  const unfav = e.target.closest("[data-unfav]");
+  if (unfav) {
+    favorites = favorites.filter((f) => f !== unfav.dataset.unfav);
+    writeJson(FAVORITES_KEY, favorites);
+    renderHomeFavorites();
+    return openAuth("account");
+  }
+
+  const action = e.target.closest("[data-auth]")?.dataset.auth;
+  if (!action) return;
+
+  if (action.startsWith("view-")) return openAuth(action.slice(5), resetEmail);
+
+  if (action === "do-signin") {
+    const identifier = $("#auth-identifier").value.trim();
+    const password = $("#auth-password").value;
+    if (!identifier) return authError("Enter your username or email.");
+    if (!password) return authError("Enter your password.");
+    // Shape checked, password dropped on the floor — nothing to verify it
+    // against until there's a backend, and nowhere safe to keep it.
+    $("#auth-password").value = "";
+    setAccount({ name: identifier.split("@")[0], email: identifier.includes("@") ? identifier : "", pro: false });
+    return openAuth("account");
+  }
+
+  if (action === "do-signup") {
+    const name = $("#auth-name").value.trim();
+    const email = $("#auth-email").value.trim();
+    const password = $("#auth-password").value;
+    const confirm = $("#auth-confirm").value;
+    if (name.length < 2) return authError("Pick a name of at least two characters.");
+    if (!emailLooksValid(email)) return authError("That doesn't look like an email address.");
+    if (password.length < MIN_PASSWORD) return authError(`Passwords need at least ${MIN_PASSWORD} characters.`);
+    if (password !== confirm) return authError("The two passwords don't match.");
+    $("#auth-password").value = "";
+    $("#auth-confirm").value = "";
+    setAccount({ name, email, pro: false });
+    return openAuth("account");
+  }
+
+  if (action === "do-forgot") {
+    const email = $("#auth-email").value.trim();
+    if (!emailLooksValid(email)) return authError("Enter the email address on the account.");
+    resetEmail = email;
+    return openAuth("reset", email);
+  }
+
+  if (action === "do-reset") {
+    const code = $("#auth-code").value.trim();
+    const password = $("#auth-password").value;
+    const confirm = $("#auth-confirm").value;
+    if (!/^\d{6}$/.test(code)) return authError("The code is six digits.");
+    if (password.length < MIN_PASSWORD) return authError(`Passwords need at least ${MIN_PASSWORD} characters.`);
+    if (password !== confirm) return authError("The two passwords don't match.");
+    $("#auth-password").value = "";
+    $("#auth-confirm").value = "";
+    return openAuth("signin");
+  }
+
+  if (action === "do-logout") {
+    setAccount(null);
+    return closeModal();
+  }
+
+  if (action === "do-simulate-upgrade") {
+    setAccount({ ...account, pro: !isPro() });
+    return openAuth("upgrade");
+  }
+
+});
+
+$("#btn-login").addEventListener("click", () => openAuth());
+renderLoginButton();
+renderHomeFavorites();
