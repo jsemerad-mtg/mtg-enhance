@@ -15,11 +15,23 @@
 
   <!-- HOME: host or join -->
   <section id="screen-home" class="screen">
+    <div class="top-bar">
+      <button id="btn-login" class="btn-ghost" type="button">Log in</button>
+    </div>
+
     <h1 class="wordmark">MTG Enhance</h1>
     <p class="tagline">Life totals and a soundboard for the table.</p>
 
     <div class="stack">
-      <button id="btn-host" class="btn btn-primary">Host a game</button>
+      <button id="btn-host-local" class="btn btn-primary btn-mode" data-mode="colocated">
+        <span class="btn-mode-title">Host a local game</span>
+        <span class="btn-mode-sub">Everyone's at one table — music and board wipes play on your device only</span>
+      </button>
+
+      <button id="btn-host-remote" class="btn btn-secondary btn-mode" data-mode="remote">
+        <span class="btn-mode-title">Host a remote game</span>
+        <span class="btn-mode-sub">Everyone's on their own screen — music and board wipes play for all players</span>
+      </button>
 
       <div class="divider">or</div>
 
@@ -39,6 +51,14 @@
     </div>
 
     <p id="home-error" class="error" hidden></p>
+
+    <section class="favorites">
+      <h2 class="section-heading">Favorites</h2>
+      <p class="empty-state">
+        Save the commanders you play most and they'll show up here for one-tap setup.
+        Needs an account — coming soon.
+      </p>
+    </section>
   </section>
 
   <!-- LOBBY: pick a name, commander, colors -->
@@ -97,7 +117,13 @@
         <span class="code-label">Game code</span>
         <span class="join-code-small" id="game-code"></span>
       </div>
-      <span id="host-badge" class="host-badge" hidden>You're hosting — sounds play here</span>
+      <span id="host-badge" class="host-badge" hidden></span>
+      <div class="header-actions">
+        <button id="btn-oracle" class="header-icon" type="button" aria-label="Ask the Oracle a rules question">
+          <span class="oracle-glyph">O</span>
+        </button>
+        <button id="btn-help" class="header-icon" type="button" aria-label="How this works">?</button>
+      </div>
     </header>
 
     <div class="self-panel">
@@ -166,6 +192,16 @@
   </section>
 
 </main>
+
+<div id="modal-backdrop" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-head">
+      <h2 id="modal-title" class="modal-title"></h2>
+      <button id="modal-close" class="modal-close" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div id="modal-body" class="modal-body"></div>
+  </div>
+</div>
 
 <script src="/client.js"></script>
 </body>

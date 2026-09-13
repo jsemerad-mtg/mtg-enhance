@@ -1,9 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
 
-// Colocated-only for this proof of concept: ambient + broadcast sounds
-// always route to the host's device only. A `mode` field is kept on
-// state now so remote mode (everyone hears ambient/broadcast) is a
-// routing-logic change later, not a schema change.
+// Session audio routing depends on `state.mode`, chosen by the host at
+// creation:
+//   colocated — everyone round one table, so ambient music and board wipes
+//               play on the host's device only; four phones playing the same
+//               sound a few feet apart phases and echoes.
+//   remote    — everyone on their own screen, so those play for all players.
+// Targeted and self-triggered sounds (damage, taunt, draw) always play on the
+// relevant player's own device in both modes.
 const COOLDOWNS_MS = {
   taunt: 8000,
   // Board Wipe is a shared, session-wide cooldown (see checkCooldown's
@@ -28,10 +32,10 @@ function checkCooldown(state, soundId, key) {
   return { ok: true };
 }
 
-function initialState(sessionId) {
+function initialState(sessionId, mode = "colocated") {
   return {
     sessionId,
-    mode: "colocated",
+    mode: mode === "remote" ? "remote" : "colocated",
     players: {}, // playerId -> PlayerState
     hostId: null,
     ambientActivePlayerId: null,
@@ -66,6 +70,17 @@ export class GameSession extends DurableObject {
       return Response.json({ status });
     }
 
+    // Take this join code if nothing holds it yet, recording the host's
+    // chosen mode. Returns claimed:false when the code is already in use so
+    // the Worker can try another one.
+    if (url.pathname === "/claim") {
+      if (this.sessionState) return Response.json({ claimed: false });
+      const body = await request.json().catch(() => ({}));
+      this.sessionState = initialState(body.code || this.ctx.id.toString(), body.mode);
+      await this.persist();
+      return Response.json({ claimed: true, mode: this.sessionState.mode });
+    }
+
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response("Expected a WebSocket upgrade", { status: 426 });
     }
@@ -98,6 +113,14 @@ export class GameSession extends DurableObject {
         // Socket is dead; webSocketClose will clean up the player state.
       }
     }
+  }
+
+  // Table-wide sounds (ambient music, board wipe): one device in colocated
+  // mode, every device in remote mode. The single place that decision lives.
+  playShared(message) {
+    const payload = { type: "play_sound", ...message };
+    if (this.sessionState.mode === "remote") this.broadcast(payload);
+    else this.sendToPlayer(this.sessionState.hostId, payload);
   }
 
   sendToPlayer(playerId, message) {
@@ -229,11 +252,7 @@ export class GameSession extends DurableObject {
         // Broadcast the cooldown to everyone, not just the presser — since
         // it's shared, every screen should grey out the button together.
         this.broadcast({ type: "cooldown_started", soundId: "broadcast", remainingMs: COOLDOWNS_MS.broadcast });
-        this.sendToPlayer(this.sessionState.hostId, {
-          type: "play_sound",
-          soundId: "broadcast",
-          fromPlayerId: att.playerId,
-        });
+        this.playShared({ soundId: "broadcast", fromPlayerId: att.playerId });
         break;
       }
 
@@ -256,8 +275,7 @@ export class GameSession extends DurableObject {
         // Broadcast the change to everyone so all screens show whose
         // ambient is live, even though only the host's device plays it.
         this.broadcast({ type: "ambient_changed", playerId: this.sessionState.ambientActivePlayerId });
-        this.sendToPlayer(this.sessionState.hostId, {
-          type: "play_sound",
+        this.playShared({
           soundId: msg.on ? "ambient_on" : "ambient_off",
           fromPlayerId: player.id,
           colorIdentity: player.colorIdentity,

@@ -98,7 +98,7 @@ function stopAmbient() {
 let ws = null;
 let code = null;
 let selfId = null;
-let session = { players: {}, hostId: null, ambientActivePlayerId: null };
+let session = { players: {}, hostId: null, ambientActivePlayerId: null, mode: "colocated" };
 let ambientIsMine = false;
 const cooldownTimers = {}; // soundId -> interval handle
 
@@ -131,7 +131,12 @@ function render() {
   $("#game-code").textContent = code;
   $("#self-name").textContent = self.displayName;
   $("#self-life").textContent = self.lifeTotal;
-  $("#host-badge").hidden = !self.isHost;
+  const badge = $("#host-badge");
+  badge.hidden = !self.isHost;
+  badge.textContent =
+    session.mode === "remote"
+      ? "Remote — sounds on all devices"
+      : "Local — sounds play here";
 
   const allPlayers = Object.values(session.players);
   const opponents = allPlayers.filter((p) => p.id !== selfId);
@@ -186,6 +191,25 @@ function renderTargetToggles(opponents) {
       renderTargetToggles(opponents);
     });
   });
+  updateKindLabels();
+}
+
+// "All players take damage" and "Me" (→ "I take damage") want the bare verb;
+// "Each opponent takes damage" and "Dave takes damage" want the -s form.
+// Each is grammatically singular even though it covers several people.
+const KIND_LABELS = {
+  gain: { plural: "Gain Life", singular: "Gains Life" },
+  loss: { plural: "Lose Life", singular: "Loses Life" },
+  damage: { plural: "Take Damage", singular: "Takes Damage" },
+};
+
+function updateKindLabels() {
+  const plural = selectedTargetValue === "all" || selectedTargetValue === selfId;
+  const form = plural ? "plural" : "singular";
+  document.querySelectorAll("#kind-toggle-group .toggle-btn").forEach((btn) => {
+    const labels = KIND_LABELS[btn.dataset.value];
+    if (labels) btn.textContent = labels[form];
+  });
 }
 
 function escapeHtml(str) {
@@ -230,6 +254,7 @@ function connectAndJoin(joinCode, lobbyInfo) {
         session.players = msg.state.players;
         session.hostId = msg.state.hostId;
         session.ambientActivePlayerId = msg.state.ambientActivePlayerId;
+        session.mode = msg.state.mode || "colocated";
         render();
         break;
       }
@@ -305,18 +330,27 @@ function showCooldown(soundId, remainingMs) {
 // ---------- screen wiring ----------
 let pendingCode = null;
 
-$("#btn-host").addEventListener("click", async () => {
-  ensureAudio();
-  $("#home-error").hidden = true;
-  try {
-    const res = await fetch("/api/create", { method: "POST" });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Could not create a game");
-    enterLobby(data.code);
-  } catch (err) {
-    $("#home-error").textContent = err.message;
-    $("#home-error").hidden = false;
-  }
+document.querySelectorAll(".btn-mode").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    ensureAudio();
+    $("#home-error").hidden = true;
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: btn.dataset.mode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not create a game");
+      enterLobby(data.code);
+    } catch (err) {
+      $("#home-error").textContent = err.message;
+      $("#home-error").hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  });
 });
 
 $("#form-join").addEventListener("submit", (e) => {
@@ -390,6 +424,7 @@ document.querySelectorAll("#kind-toggle-group .toggle-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     selectedKindValue = btn.dataset.value;
     document.querySelectorAll("#kind-toggle-group .toggle-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    updateKindLabels();
   });
 });
 
@@ -763,3 +798,86 @@ suggestionList.addEventListener("mousedown", (e) => {
 commanderInput.addEventListener("blur", () => {
   setTimeout(closeSuggestions, 120);
 });
+
+// ---------- modals (how-to, Oracle placeholder, log in) ----------
+const modalBackdrop = $("#modal-backdrop");
+const modalTitle = $("#modal-title");
+const modalBody = $("#modal-body");
+
+function openModal(title, bodyHtml) {
+  modalTitle.textContent = title;
+  modalBody.innerHTML = bodyHtml;
+  modalBackdrop.hidden = false;
+  $("#modal-close").focus();
+}
+
+function closeModal() {
+  modalBackdrop.hidden = true;
+}
+
+$("#modal-close").addEventListener("click", closeModal);
+modalBackdrop.addEventListener("click", (e) => {
+  if (e.target === modalBackdrop) closeModal(); // backdrop only, not the card
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !modalBackdrop.hidden) closeModal();
+});
+
+const HELP_HTML = `
+  <h3>The table</h3>
+  <p>Everyone at one table shares a four-character game code. The first person
+  in is the host. Anyone can rejoin with the same code on the same device
+  without losing their seat.</p>
+
+  <h3>Local vs remote</h3>
+  <p>In a <strong>local</strong> game everyone is in one room, so ambient music
+  and board wipes play on the host's device only — four phones playing the same
+  sound a few feet apart echoes badly. In a <strong>remote</strong> game those
+  play on every device. Damage, taunts and card draws always play on the
+  relevant player's own device either way.</p>
+
+  <h3>Life totals</h3>
+  <p>The big number is yours; tap −1 and +1 for small corrections. Opponents
+  are listed below with their commander and colors.</p>
+
+  <h3>The soundboard</h3>
+  <ul>
+    <li><strong>Wipe</strong> — a board wipe sting for the whole table. Shared
+    60-second cooldown, so only one wipe lands at a time.</li>
+    <li><strong>Music</strong> — toggles an ambient bed keyed to your color
+    identity. One player's music is live at a time.</li>
+    <li><strong>Taunt</strong> — plays on your own device. 8-second cooldown.</li>
+    <li><strong>Draw</strong> — a card-flip click, no cooldown.</li>
+  </ul>
+
+  <h3>Life events</h3>
+  <p>The lower panel builds one sentence: pick <em>who</em>, pick
+  <em>what happens</em>, spin the amount, press Apply. Use it for real swings —
+  combat damage, a life-gain trigger, or a board-wide "each player loses 3".
+  The matching sound plays on each affected player's own device.</p>
+
+  <h3>Sounds not playing?</h3>
+  <p>Phone browsers won't play audio until you've tapped something, so tap any
+  button once after joining. Keep the screen awake — a locked phone stops
+  receiving sounds.</p>
+`;
+
+const ORACLE_HTML = `
+  <p class="placeholder-flag">Not built yet — this is a placeholder.</p>
+  <p>This is where you'll settle rules arguments without leaving the game. Ask
+  a question, get an answer from MTG Oracle, and choose whether to push it to
+  the table — it'll appear as a card in every player's feed.</p>
+  <p>Answers stay private until you share them, so you can check a ruling
+  without telegraphing what you're holding.</p>
+`;
+
+const LOGIN_HTML = `
+  <p class="placeholder-flag">Not built yet — this is a placeholder.</p>
+  <p>Accounts will save your commanders, favorites and custom sound packages
+  across devices. Hosting will need an account; other players will still be
+  able to join as guests with the default sounds.</p>
+`;
+
+$("#btn-help").addEventListener("click", () => openModal("How this works", HELP_HTML));
+$("#btn-oracle").addEventListener("click", () => openModal("Ask the Oracle", ORACLE_HTML));
+$("#btn-login").addEventListener("click", () => openModal("Log in", LOGIN_HTML));
