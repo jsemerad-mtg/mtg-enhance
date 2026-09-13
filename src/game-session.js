@@ -60,6 +60,18 @@ const POKE_MIN_TURN_MS = 60000;
 const COMMANDER_DAMAGE_LETHAL = 21;
 const POISON_LETHAL = 10;
 
+// A player is out on any of the three loss conditions. Announced once on the
+// transition, not on every life change afterwards, so a player sitting at 0
+// doesn't re-trigger the sound each time anything else moves.
+function lethalReason(player) {
+  if (!player) return null;
+  if ((player.lifeTotal ?? 1) <= 0) return "life";
+  if ((player.poison ?? 0) >= POISON_LETHAL) return "poison";
+  const worst = Math.max(0, ...Object.values(player.commanderDamage || {}));
+  if (worst >= COMMANDER_DAMAGE_LETHAL) return "commander";
+  return null;
+}
+
 function activePlayerId(state) {
   return state.turnOrder[state.activePlayerIndex] ?? null;
 }
@@ -93,6 +105,7 @@ export class GameSession extends DurableObject {
       if (typeof player.muted !== "boolean") player.muted = false;
       if (!player.commanderDamage || typeof player.commanderDamage !== "object") player.commanderDamage = {};
       if (typeof player.poison !== "number") player.poison = 0;
+      if (typeof player.lethalAnnounced !== "boolean") player.lethalAnnounced = false;
     }
   }
 
@@ -101,6 +114,19 @@ export class GameSession extends DurableObject {
   publicState() {
     const { pin, ...rest } = this.sessionState;
     return { ...rest, pinRequired: pin !== null };
+  }
+
+  announceLethal(player) {
+    const reason = lethalReason(player);
+    if (!reason) {
+      // Recovered — a mistyped total or a life-gain trigger. Let it announce
+      // again if they go back under.
+      player.lethalAnnounced = false;
+      return;
+    }
+    if (player.lethalAnnounced) return;
+    player.lethalAnnounced = true;
+    this.broadcast({ type: "lethal", playerId: player.id, reason });
   }
 
   async persist() {
@@ -248,6 +274,7 @@ export class GameSession extends DurableObject {
             // the 21 threshold is per-commander, not cumulative.
             commanderDamage: {},
             poison: 0,
+            lethalAnnounced: false,
           };
           if (isFirstPlayer) this.sessionState.hostId = playerId;
           this.sessionState.turnOrder.push(playerId);
@@ -271,6 +298,7 @@ export class GameSession extends DurableObject {
         player.lifeTotal += msg.delta;
         await this.persist();
         this.broadcast({ type: "life_update", playerId: player.id, lifeTotal: player.lifeTotal });
+        this.announceLethal(player);
         break;
       }
 
@@ -315,6 +343,7 @@ export class GameSession extends DurableObject {
 
         for (const target of targets) {
           this.broadcast({ type: "life_update", playerId: target.id, lifeTotal: target.lifeTotal });
+          this.announceLethal(target);
           // Only the affected player's own device plays the sound,
           // regardless of colocated/remote mode — true whether this is a
           // single target or one of a group hit by the same event.
@@ -323,6 +352,7 @@ export class GameSession extends DurableObject {
             soundId,
             fromPlayerId: att.playerId,
           });
+          this.announceLethal(target);
         }
         break;
       }
@@ -419,14 +449,7 @@ export class GameSession extends DurableObject {
           });
           this.announceActivity(att.playerId, "commander_damage");
         }
-        if (next >= COMMANDER_DAMAGE_LETHAL) {
-          this.broadcast({
-            type: "lethal",
-            playerId: target.id,
-            reason: "commander",
-            sourcePlayerId: source.id,
-          });
-        }
+        this.announceLethal(target);
         break;
       }
 
@@ -437,9 +460,7 @@ export class GameSession extends DurableObject {
         target.poison = Math.max(0, Math.min(POISON_LETHAL, (target.poison ?? 0) + delta));
         await this.persist();
         this.broadcast({ type: "state_sync", state: this.publicState() });
-        if (target.poison >= POISON_LETHAL) {
-          this.broadcast({ type: "lethal", playerId: target.id, reason: "poison" });
-        }
+        this.announceLethal(target);
         break;
       }
 

@@ -7,6 +7,8 @@ const screens = {
 };
 function showScreen(name) {
   for (const key of Object.keys(screens)) screens[key].hidden = key !== name;
+  // The wheel can only be positioned once its screen is actually rendered.
+  if (name === "game" && typeof positionWheel === "function") positionWheel();
 }
 
 // ---------- placeholder audio (synthesized — no sound files yet) ----------
@@ -134,6 +136,7 @@ function render() {
   $("#self-life").textContent = self.lifeTotal;
 
   $("#self-panel").classList.toggle("active-turn", session.activePlayerId === selfId);
+  $("#self-panel").classList.toggle("lethal-row", isLethal(self));
 
   const selfCommander = $("#self-commander");
   selfCommander.textContent = self.commanderName || "";
@@ -305,10 +308,14 @@ function connectAndJoin(joinCode, lobbyInfo) {
         break;
       }
       case "lethal": {
-        const who = session.players[msg.playerId];
-        if (who) {
-          flash(msg.playerId === selfId ? $("#self-panel") : document.querySelector(`.opponent-row[data-player-id="${CSS.escape(msg.playerId)}"]`));
-        }
+        const box =
+          msg.playerId === selfId
+            ? $("#self-panel")
+            : document.querySelector(`.opponent-row[data-player-id="${CSS.escape(msg.playerId)}"]`);
+        flash(box);
+        // Plays on every device: the table should hear someone go out, not
+        // just the player it happened to.
+        if (!muted) playLethal();
         break;
       }
       case "turn_changed": {
@@ -529,7 +536,9 @@ document.querySelectorAll("#kind-toggle-group .toggle-btn").forEach((btn) => {
 });
 
 // Amount wheel: a scroll-snapping vertical list, 0–20, defaulting to 1.
-const WHEEL_ITEM_HEIGHT = 44;
+// Measured from the rendered row rather than hard-coded: the CSS owns the
+// geometry, and a duplicated constant here is exactly what drifted last time.
+let wheelItemHeight = 36;
 const WHEEL_MAX = 20;
 
 function initWheel() {
@@ -539,6 +548,9 @@ function initWheel() {
   html += `<div class="wheel-pad"></div>`;
   wheel.innerHTML = html;
 
+  const firstItem = wheel.querySelector(".wheel-item");
+  if (firstItem) wheelItemHeight = firstItem.getBoundingClientRect().height || wheelItemHeight;
+
   wheel.querySelectorAll(".wheel-item").forEach((item) => {
     item.addEventListener("click", () => item.scrollIntoView({ block: "center", behavior: "smooth" }));
   });
@@ -547,13 +559,27 @@ function initWheel() {
   wheel.addEventListener("scroll", () => {
     clearTimeout(scrollTimeout);
     scrollTimeout = setTimeout(() => {
-      const index = Math.round(wheel.scrollTop / WHEEL_ITEM_HEIGHT);
+      const index = Math.round(wheel.scrollTop / wheelItemHeight);
       wheelAmount = Math.min(WHEEL_MAX, Math.max(0, index));
       updateWheelSelection();
     }, 80);
   });
 
-  wheel.scrollTop = wheelAmount * WHEEL_ITEM_HEIGHT; // jump to default (1), no animation
+  positionWheel();
+}
+
+// scrollTop can't be set on a display:none element, and initWheel() runs at
+// load while the game screen is still hidden — so the wheel silently sat at 0
+// and Send did nothing until you scrolled it. Position it when the screen is
+// actually on, not when the script runs.
+function positionWheel() {
+  const wheel = $("#wheel-amount");
+  const firstItem = wheel.querySelector(".wheel-item");
+  if (firstItem) {
+    const measured = firstItem.getBoundingClientRect().height;
+    if (measured) wheelItemHeight = measured;
+  }
+  wheel.scrollTop = wheelAmount * wheelItemHeight;
   updateWheelSelection();
 }
 
@@ -1931,6 +1957,7 @@ function worstCommanderDamage(player) {
 
 function isLethal(player) {
   if (!player) return false;
+  if ((player.lifeTotal ?? 1) <= 0) return true;
   return worstCommanderDamage(player) >= COMMANDER_DAMAGE_LETHAL || (player.poison ?? 0) >= POISON_LETHAL;
 }
 
@@ -2050,4 +2077,13 @@ function refreshOpenModal() {
     openPlayerMenu(menuTargetId);
   }
   modalBody.scrollTop = scroll;
+}
+
+// Elimination: a slow descending minor figure, longer and lower than a damage
+// hit so it reads as final rather than as another point of damage.
+function playLethal() {
+  [330, 262, 196, 147].forEach((freq, i) =>
+    tone({ freq, duration: 1.1, type: "triangle", gain: 0.17, delay: i * 0.16 })
+  );
+  tone({ freq: 98, duration: 1.6, type: "sine", gain: 0.2, delay: 0.55 });
 }
