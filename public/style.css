@@ -1102,3 +1102,19 @@ body {
 .pin-toggle input { accent-color: var(--accent); width: 17px; height: 17px; }
 
 .pin-input { max-width: 120px; }
+
+/* The ±5 steppers sit outside the ±1 pair and read as secondary, so the
+   common single-point adjustment stays the easiest target to hit. */
+.life-btn-big {
+  width: 38px;
+  height: 38px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.life-btn-big:hover { color: var(--text); }
+
+/* Five controls in the life row no longer fit the old 24px gaps on a 375px
+   phone — the row would overflow its panel. */
+.life-row { gap: 10px; }
+.life-btn { width: 44px; height: 44px; }
+.life-total { min-width: 86px; font-size: 3rem; }
