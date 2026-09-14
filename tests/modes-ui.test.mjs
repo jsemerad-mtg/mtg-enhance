@@ -38,7 +38,7 @@ console.log("\nnothing is chosen to begin with");
   check("no prompt, no code box, no action button yet", r.detailHidden === true);
 }
 
-console.log("\nthree equal buttons");
+console.log("\nfour equal buttons");
 {
   const dims = await page.evaluate(() =>
     [...document.querySelectorAll(".mode-btn")].map((b) => {
@@ -46,10 +46,21 @@ console.log("\nthree equal buttons");
       return { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top) };
     })
   );
-  check("there are three", dims.length === 3, String(dims.length));
+  check("there are four", dims.length === 4, String(dims.length));
   check("equal widths", new Set(dims.map((d) => d.w)).size === 1, JSON.stringify(dims.map((d) => d.w)));
   check("equal heights", new Set(dims.map((d) => d.h)).size === 1, JSON.stringify(dims.map((d) => d.h)));
-  check("on one row", new Set(dims.map((d) => d.top)).size === 1, JSON.stringify(dims.map((d) => d.top)));
+  // 2x2 at phone width. Four labels on one 390px row would be ~90px each,
+  // which is narrower than the words.
+  check("two rows of two at 390px", new Set(dims.map((d) => d.top)).size === 2,
+    JSON.stringify(dims.map((d) => d.top)));
+}
+{
+  await page.setViewportSize({ width: 700, height: 800 });
+  const tops = await page.evaluate(() =>
+    [...document.querySelectorAll(".mode-btn")].map((b) => Math.round(b.getBoundingClientRect().top))
+  );
+  check("and one row of four once there's room", new Set(tops).size === 1, JSON.stringify(tops));
+  await page.setViewportSize({ width: 390, height: 800 });
 }
 {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
@@ -120,27 +131,66 @@ console.log("\ncommitting");
   check("and says what's wrong", r.hidden === false && /4-character/i.test(r.text), r.text);
 }
 {
-  const r = await page.evaluate(() => {
-    document.querySelector("#input-code").value = "wxyz";
-    document.querySelector("#btn-mode-go").click();
+  // A code nobody is hosting. Caught while the code box is still on screen.
+  const r = await page.evaluate(async () => {
+    document.querySelector("#input-code").value = "zzzz";
+    await startChosenMode();
+    const err = document.querySelector("#home-error");
+    return { screen: currentScreen, hidden: err.hidden, text: err.textContent };
+  });
+  check("an unknown code doesn't advance", r.screen === "home", r.screen);
+  check("and names the code that failed", r.hidden === false && /ZZZZ/.test(r.text), r.text);
+  check("and points at the host", /whoever is hosting/i.test(r.text), r.text);
+}
+{
+  // A real table that wants a PIN: the field is ready on arrival, not after a
+  // rejected join.
+  const r = await page.evaluate(async () => {
+    document.querySelector("#input-code").value = "pinx";
+    await startChosenMode();
+    return {
+      screen: currentScreen,
+      pinHidden: document.querySelector("#join-pin-field").hidden,
+      focused: document.activeElement?.id,
+    };
+  });
+  check("a PIN table still enters the lobby", r.screen === "lobby", r.screen);
+  check("with the PIN field already showing", r.pinHidden === false);
+  check("and the cursor in it", r.focused === "input-join-pin", String(r.focused));
+}
+{
+  const r = await page.evaluate(async () => {
+    showScreen("home"); chooseMode("join");
+    document.querySelector("#input-code").value = "abcd";
+    await startChosenMode();
+    return { screen: currentScreen, pinHidden: document.querySelector("#join-pin-field").hidden };
+  });
+  check("a table without a PIN shows no PIN field", r.screen === "lobby" && r.pinHidden === true, JSON.stringify(r));
+}
+{
+  await page.evaluate(() => { showScreen("home"); chooseMode("join"); });
+  const r = await page.evaluate(async () => {
+    document.querySelector("#input-code").value = "abcd";
+    await startChosenMode();
     // `code` isn't set until the socket connects — the lobby holds the
     // not-yet-joined table as `pendingCode`, which is what to assert here.
     return { screen: currentScreen, pending: pendingCode, shown: document.querySelector("#lobby-code").textContent };
   });
   check("a full code enters the lobby", r.screen === "lobby", r.screen);
-  check("and is upper-cased on the way", r.pending === "WXYZ", String(r.pending));
-  check("and the lobby shows that table code", r.shown === "WXYZ", r.shown);
+  check("and is upper-cased on the way", r.pending === "ABCD", String(r.pending));
+  check("and the lobby shows that table code", r.shown === "ABCD", r.shown);
 }
 {
   // Enter used to submit the form. The form is gone; the behaviour shouldn't be.
   await page.evaluate(() => { showScreen("home"); chooseMode("join"); });
-  const r = await page.evaluate(() => {
+  const r = await page.evaluate(async () => {
     const input = document.querySelector("#input-code");
-    input.value = "QRST";
+    input.value = "ABCD";
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await new Promise((r) => setTimeout(r, 300));
     return { screen: currentScreen, pending: pendingCode };
   });
-  check("Enter in the code box still joins", r.screen === "lobby" && r.pending === "QRST", JSON.stringify(r));
+  check("Enter in the code box still joins", r.screen === "lobby" && r.pending === "ABCD", JSON.stringify(r));
 }
 
 console.log("\nthe PIN gate still applies to hosts");

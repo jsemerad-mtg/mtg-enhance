@@ -55,6 +55,9 @@
         <button type="button" class="mode-btn" data-pick="join" role="radio" aria-checked="false">
           <span class="mode-btn-title">Join a Game</span>
         </button>
+        <button type="button" class="mode-btn mode-btn-quiet" data-pick="stats" role="radio" aria-checked="false">
+          <span class="mode-btn-title">My Commanders</span>
+        </button>
       </div>
 
       <div id="mode-detail" class="mode-detail" hidden>
@@ -91,6 +94,12 @@
       trademark of Wizards of the Coast LLC.</p>
       <p><button class="link-btn" type="button" id="btn-legal">What this app collects</button></p>
     </footer>
+  </section>
+
+  <!-- MY COMMANDERS: records, no table required -->
+  <section id="screen-stats" class="screen" hidden>
+    <h2 class="section-heading">My Commanders</h2>
+    <div id="records-list"></div>
   </section>
 
   <!-- LOBBY: pick a name, commander, colors -->

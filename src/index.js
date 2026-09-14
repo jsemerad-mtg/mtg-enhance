@@ -1,5 +1,30 @@
 import { GameSession } from "./game-session.js";
-import { currentUser, unlockIdentity } from "./shared-session.js";
+import { currentUser, unlockIdentity, canonicalIdentity } from "./shared-session.js";
+
+// Records and history are read fresh every time. They change when a game ends,
+// which is exactly when a stale answer would be most noticeable.
+const noStore = { headers: { "Cache-Control": "no-store" } };
+
+// A failed read returns nothing rather than throwing, but says why where
+// `wrangler tail` can see it — silent fail-closed is how a missing table once
+// looked identical to an empty account for several hours.
+const logAndEmpty = (what) => (e) => {
+  console.error(`${what} read failed:`, e?.message || e);
+  return { results: [] };
+};
+
+// Seats are written by us as JSON, but they are still a database value being
+// handed to three other browsers. A malformed one is an empty table, never an
+// exception mid-response.
+function safeSeats(raw) {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.slice(0, 8) : null;
+  } catch {
+    return null;
+  }
+}
 
 // Must match the cap Oracle enforces, so a question can't pass here and then
 // be refused there after the allowance has already been spent.
@@ -172,6 +197,179 @@ export default {
       }
     }
 
+    // ── Records, history and decks ──────────────────────────────────────────
+    // All account-only. Guests get a signedIn:false shape rather than an empty
+    // list, so the UI can say "sign in and these are kept" instead of showing
+    // a blank table that reads like data went missing.
+    if (url.pathname === "/api/records" && request.method === "GET") {
+      const me = await currentUser(request, env).catch(() => ({ signedIn: false }));
+      if (!me.signedIn || !env.DB) {
+        return Response.json({ signedIn: false, byCommander: [], byIdentity: [] }, noStore);
+      }
+      // Totals are derived, not stored. The log is the only source of truth,
+      // which is what lets a manually-entered game count exactly like a played
+      // one without a separate adjustment column.
+      const byCommander = await env.DB
+        .prepare(
+          `SELECT commander, identity,
+                  SUM(won) AS wins, SUM(1 - won) AS losses, MAX(played_at) AS last_played
+             FROM game_history WHERE user_id = ?
+            GROUP BY commander, identity
+            ORDER BY (wins + losses) DESC, commander ASC LIMIT 200`
+        )
+        .bind(me.userId).all().catch(logAndEmpty("records byCommander"));
+
+      // The same log, grouped the other way. A player with six mono-red decks
+      // may care more about how red performs than how each build does.
+      const byIdentity = await env.DB
+        .prepare(
+          `SELECT identity, SUM(won) AS wins, SUM(1 - won) AS losses
+             FROM game_history WHERE user_id = ?
+            GROUP BY identity ORDER BY (wins + losses) DESC LIMIT 40`
+        )
+        .bind(me.userId).all().catch(logAndEmpty("records byIdentity"));
+
+      return Response.json({
+        signedIn: true,
+        byCommander: byCommander.results || [],
+        byIdentity: byIdentity.results || [],
+      }, noStore);
+    }
+
+    // Past matches, newest first. `commander` narrows it to one deck.
+    if (url.pathname === "/api/history" && request.method === "GET") {
+      const me = await currentUser(request, env).catch(() => ({ signedIn: false }));
+      if (!me.signedIn || !env.DB) return Response.json({ signedIn: false, games: [] }, noStore);
+
+      const commander = url.searchParams.get("commander");
+      const stmt = commander
+        ? env.DB.prepare(
+            `SELECT id, game_id, commander, identity, bracket, won, source, seats, played_at
+               FROM game_history WHERE user_id = ? AND commander = ?
+              ORDER BY played_at DESC LIMIT 100`
+          ).bind(me.userId, commander.slice(0, 80))
+        : env.DB.prepare(
+            `SELECT id, game_id, commander, identity, bracket, won, source, seats, played_at
+               FROM game_history WHERE user_id = ? ORDER BY played_at DESC LIMIT 100`
+          ).bind(me.userId);
+
+      const { results } = await stmt.all().catch(logAndEmpty("history"));
+      const games = (results || []).map((row) => ({
+        ...row,
+        // Parsed here so the client never runs JSON.parse on a database value
+        // and never has to decide what a malformed one means.
+        seats: safeSeats(row.seats),
+      }));
+      return Response.json({ signedIn: true, games }, noStore);
+    }
+
+    // A game played away from the app. This is a first-class row, not an
+    // adjustment: people play plenty of Commander without a phone on the table
+    // and reasonably want it counted.
+    if (url.pathname === "/api/history/manual" && request.method === "POST") {
+      const me = await currentUser(request, env).catch(() => ({ signedIn: false }));
+      if (!me.signedIn || !env.DB) {
+        return Response.json({ ok: false, error: "Sign in to track games." }, { status: 401 });
+      }
+      const body = await request.json().catch(() => ({}));
+      const commander = String(body.commander || "").trim().slice(0, 80);
+      if (!commander) return Response.json({ ok: false, error: "Name the commander." }, { status: 400 });
+
+      const bracket = Number.isInteger(body.bracket) && body.bracket >= 1 && body.bracket <= 5
+        ? body.bracket : null;
+      try {
+        await env.DB.prepare(
+          `INSERT INTO game_history (user_id, game_id, commander, identity, bracket, won, source, seats)
+           VALUES (?, NULL, ?, ?, ?, ?, 'manual', NULL)`
+        ).bind(me.userId, commander, canonicalIdentity(body.identity) || "C",
+               bracket, body.won ? 1 : 0).run();
+      } catch (e) {
+        console.error("manual history write failed:", e?.message || e);
+        return Response.json({ ok: false, error: "Could not record that." }, { status: 500 });
+      }
+      return Response.json({ ok: true }, noStore);
+    }
+
+    // Removing a recorded game. Kept deliberately simple — one row, by id,
+    // and only your own.
+    if (url.pathname.startsWith("/api/history/") && request.method === "DELETE") {
+      const me = await currentUser(request, env).catch(() => ({ signedIn: false }));
+      if (!me.signedIn || !env.DB) return Response.json({ ok: false }, { status: 401 });
+      const id = Number(url.pathname.split("/")[3]);
+      if (!Number.isInteger(id)) return Response.json({ ok: false }, { status: 400 });
+      await env.DB.prepare("DELETE FROM game_history WHERE id = ? AND user_id = ?")
+        .bind(id, me.userId).run().catch(() => {});
+      return Response.json({ ok: true }, noStore);
+    }
+
+    // Decks — what "favorites" became once they could carry a bracket and a
+    // decklist link.
+    if (url.pathname === "/api/decks" && request.method === "GET") {
+      const me = await currentUser(request, env).catch(() => ({ signedIn: false }));
+      if (!me.signedIn || !env.DB) return Response.json({ signedIn: false, decks: [] }, noStore);
+      const { results } = await env.DB
+        .prepare(
+          `SELECT id, commander, identity, bracket, deck_url
+             FROM decks WHERE user_id = ? ORDER BY commander ASC LIMIT 100`
+        )
+        .bind(me.userId).all().catch(logAndEmpty("decks"));
+      return Response.json({ signedIn: true, decks: results || [] }, noStore);
+    }
+
+    if (url.pathname === "/api/decks" && request.method === "POST") {
+      const me = await currentUser(request, env).catch(() => ({ signedIn: false }));
+      if (!me.signedIn || !env.DB) {
+        return Response.json({ ok: false, error: "Sign in to save decks." }, { status: 401 });
+      }
+      const body = await request.json().catch(() => ({}));
+      const commander = String(body.commander || "").trim().slice(0, 80);
+      if (!commander) return Response.json({ ok: false, error: "Name the commander." }, { status: 400 });
+
+      const bracket = Number.isInteger(body.bracket) && body.bracket >= 1 && body.bracket <= 5
+        ? body.bracket : null;
+
+      // A decklist link is shown to three other people, so only ordinary web
+      // links are accepted: no javascript:, no data:, nothing that does
+      // something when tapped other than open a page.
+      let deckUrl = null;
+      const raw = String(body.deckUrl || "").trim();
+      if (raw) {
+        try {
+          const parsed = new URL(raw);
+          if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("scheme");
+          deckUrl = parsed.toString().slice(0, 500);
+        } catch {
+          return Response.json({ ok: false, error: "That doesn't look like a web link." }, { status: 400 });
+        }
+      }
+
+      try {
+        await env.DB.prepare(
+          `INSERT INTO decks (user_id, commander, identity, bracket, deck_url)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, commander) DO UPDATE SET
+             identity = excluded.identity,
+             bracket = excluded.bracket,
+             deck_url = excluded.deck_url,
+             updated_at = datetime('now')`
+        ).bind(me.userId, commander, canonicalIdentity(body.identity) || "C", bracket, deckUrl).run();
+      } catch (e) {
+        console.error("deck write failed:", e?.message || e);
+        return Response.json({ ok: false, error: "Could not save that deck." }, { status: 500 });
+      }
+      return Response.json({ ok: true }, noStore);
+    }
+
+    if (url.pathname.startsWith("/api/decks/") && request.method === "DELETE") {
+      const me = await currentUser(request, env).catch(() => ({ signedIn: false }));
+      if (!me.signedIn || !env.DB) return Response.json({ ok: false }, { status: 401 });
+      const id = Number(url.pathname.split("/")[3]);
+      if (!Number.isInteger(id)) return Response.json({ ok: false }, { status: 400 });
+      await env.DB.prepare("DELETE FROM decks WHERE id = ? AND user_id = ?")
+        .bind(id, me.userId).run().catch(() => {});
+      return Response.json({ ok: true }, noStore);
+    }
+
     // Asked by the lobby before connecting, so a joiner is prompted for a PIN
     // up front rather than being bounced after a failed WebSocket join.
     if (url.pathname.startsWith("/api/session/")) {
@@ -201,6 +399,10 @@ export default {
       const entitlements = JSON.stringify({
         all: me.all === true,
         identities: Array.isArray(me.identities) ? me.identities : [],
+        // Who this seat belongs to, so the Durable Object can record a result
+        // against a real account when the game ends. Guests arrive as null and
+        // are simply not recorded — there is nowhere to put the row.
+        userId: me.signedIn ? me.userId || null : null,
       });
 
       const headers = new Headers(request.headers);

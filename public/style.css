@@ -1844,3 +1844,36 @@ body::before {
 @media (prefers-reduced-motion: reduce) {
   .mode-btn { transition: none; }
 }
+
+/* ---------- Win / loss ---------- */
+.wl {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 1px;
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.wl-w { color: var(--accent); font-weight: 600; }
+.wl-sep { color: var(--text-muted); opacity: 0.7; }
+.wl-l { color: var(--text-muted); }
+.wl-pct {
+  min-width: 38px;
+  text-align: right;
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+/* The fourth mode is a destination, not a game to create — so it sits a shade
+   quieter than the three that make something. */
+.mode-btn-quiet { font-weight: 500; }
+
+/* Four cells wrap to 2x2 rather than squeezing four labels onto one phone row,
+   where each would be about 90px wide. */
+.mode-row { grid-template-columns: repeat(2, 1fr); }
+@media (min-width: 560px) {
+  .mode-row { grid-template-columns: repeat(4, 1fr); }
+}

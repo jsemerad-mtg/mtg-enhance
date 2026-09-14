@@ -3,16 +3,27 @@ const $ = (sel) => document.querySelector(sel);
 const screens = {
   home: $("#screen-home"),
   lobby: $("#screen-lobby"),
+  stats: $("#screen-stats"),
   game: $("#screen-game"),
 };
 // ---------- where you are, and how to get back ----------
 // Three steps today. The list is data rather than markup so that adding a step
 // later (deck import, table settings) is one entry, not a hunt through HTML.
-const STEPS = [
+const GAME_STEPS = [
   { id: "home", label: "Table" },
   { id: "lobby", label: "Commander" },
   { id: "game", label: "Game" },
 ];
+
+// My Commanders is a destination, not a stage of setting up a game, so it gets
+// its own two-step train rather than pretending to be step 2 of 3 with no step
+// 1 and no step 3. Same affordance — the first step is still the way back.
+const STATS_STEPS = [
+  { id: "home", label: "Table" },
+  { id: "stats", label: "My Commanders" },
+];
+
+const stepsFor = (screen) => (screen === "stats" ? STATS_STEPS : GAME_STEPS);
 
 let currentScreen = "home";
 
@@ -33,8 +44,9 @@ function showScreen(name) {
 function renderSteps() {
   const nav = $("#step-train");
   if (!nav) return;
-  const at = STEPS.findIndex((s) => s.id === currentScreen);
-  nav.innerHTML = STEPS.map((step, i) => {
+  const steps = stepsFor(currentScreen);
+  const at = steps.findIndex((s) => s.id === currentScreen);
+  nav.innerHTML = steps.map((step, i) => {
     const state = i < at ? "done" : i === at ? "current" : "todo";
     // Only completed steps are reachable. Jumping *forward* would skip the
     // work each step exists to collect.
@@ -578,6 +590,13 @@ const MODES = {
 let chosenMode = null;
 
 function chooseMode(mode) {
+  // Not a game mode: nothing is created, so there is nothing to confirm.
+  // Tapping it should just take you there, the way a tab would.
+  if (mode === "stats") {
+    openRecords();
+    return;
+  }
+
   chosenMode = mode;
   $("#home-error").hidden = true;
 
@@ -2239,10 +2258,16 @@ let sessionAttempt = 0;
 const RETRY_MS = [2000, 5000, 15000, 30000];
 
 function applySession(next) {
+  const wasSignedIn = sessionState === "in";
   account = next;
   sessionState = next ? "in" : "out";
   sessionAttempt = 0;
   renderAccountUi();
+  // Signing in mid-session should bring the records with it; signing out
+  // should take them away rather than leaving the last account's numbers on
+  // screen next to somebody else's name.
+  if (!next) { records = []; byIdentity = []; recordsState = "guest"; renderRecords(); renderFavorites(); }
+  else if (!wasSignedIn) loadRecords();
 }
 
 function renderAccountUi() {
@@ -2413,6 +2438,88 @@ function openAuth(view = defaultAuthView(), arg) {
   modalBody.classList.add("auth-modal");
 }
 
+// ---------- commander records ----------
+// Win/loss per commander, recorded server-side when a game ends with one
+// player standing. Guests have none — there is nowhere to store them — and the
+// screen says that rather than showing an empty table, which reads as data
+// that went missing.
+let records = [];          // [{ commander, identity, wins, losses }]
+let byIdentity = [];       // the same games grouped by colour identity
+let recordsState = "idle"; // "idle" | "loading" | "ready" | "failed" | "guest"
+
+function recordFor(name) {
+  const key = String(name || "").toLowerCase();
+  return records.find((r) => String(r.commander).toLowerCase() === key) || null;
+}
+
+function recordBadge(name) {
+  const r = recordFor(name);
+  if (!r) return "";
+  return `<span class="wl" title="${r.wins} won, ${r.losses} lost">
+    <span class="wl-w">${r.wins}</span><span class="wl-sep">–</span><span class="wl-l">${r.losses}</span>
+  </span>`;
+}
+
+async function loadRecords() {
+  if (recordsState === "loading") return;
+  recordsState = "loading";
+  try {
+    const res = await fetch("/api/records", { credentials: "include", cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    records = Array.isArray(data.byCommander) ? data.byCommander : [];
+    byIdentity = Array.isArray(data.byIdentity) ? data.byIdentity : [];
+    recordsState = data.signedIn ? "ready" : "guest";
+  } catch {
+    // Same rule as the session check: a request that didn't come back is not
+    // evidence that someone has no record.
+    recordsState = "failed";
+  }
+  renderRecords();
+  renderFavorites();
+}
+
+function recordsHtml() {
+  if (recordsState === "guest") {
+    return `<p class="empty-state">Sign in and your wins and losses are kept with each
+      commander, across every device you play on.</p>`;
+  }
+  if (recordsState === "loading" || recordsState === "idle") {
+    return `<p class="empty-state">Loading…</p>`;
+  }
+  if (recordsState === "failed") {
+    return `<p class="empty-state">Couldn't load your records just now. This isn't a
+      reset — try again in a moment.</p>`;
+  }
+  if (!records.length) {
+    return `<p class="empty-state">No games recorded yet. A result is written when a game
+      ends with one player still standing.</p>`;
+  }
+  return `<ul class="fav-list">${records
+    .map((r) => {
+      const played = r.wins + r.losses;
+      const pct = played ? Math.round((r.wins / played) * 100) : 0;
+      return `<li class="fav-row">
+        <span class="fav-name">${escapeHtml(r.commander)}</span>
+        ${pipsHtml(r.identity === "C" ? "" : r.identity)}
+        <span class="wl"><span class="wl-w">${r.wins}</span><span class="wl-sep">–</span><span class="wl-l">${r.losses}</span></span>
+        <span class="wl-pct">${pct}%</span>
+      </li>`;
+    })
+    .join("")}</ul>`;
+}
+
+function renderRecords() {
+  const host = $("#records-list");
+  if (host) host.innerHTML = recordsHtml();
+}
+
+function openRecords() {
+  showScreen("stats");
+  renderRecords();
+  loadRecords();
+}
+
 // ---------- favorite commanders ----------
 function favoritesEditorHtml() {
   if (!signedIn()) {
@@ -2453,7 +2560,7 @@ function renderFavorites() {
     .map((entry) => {
       const [name, ci] = splitFavorite(entry);
       return `<button type="button" class="fav-chip" data-preselect="${escapeHtml(entry)}">
-        <span>${escapeHtml(name)}</span>${pipsHtml(ci)}</button>`;
+        <span>${escapeHtml(name)}</span>${pipsHtml(ci)}${recordBadge(name)}</button>`;
     })
     .join("")}</div>
     <p class="field-note">Tap one to use it in your next game.</p>`;

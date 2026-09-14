@@ -131,6 +131,9 @@ export async function currentUser(request, env) {
 
   return {
     signedIn: true,
+    // The account id. Needed by the Durable Object to record a game result
+    // against the right person; never shown in the UI.
+    userId: user.id,
     email: user.email,
     name: user.name || user.email.split('@')[0],
     ...summarise(await entitlementRows(env, user.id)),

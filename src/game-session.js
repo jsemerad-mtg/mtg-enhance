@@ -61,6 +61,12 @@ function initialState(sessionId, mode = "colocated", pin = null) {
     // burning the table's. It's also the honest thing to show: "this table has
     // 7 questions left" is a sentence four people can reason about together.
     oracleAsked: 0,
+    // Set once, when one player is left standing. Guards against a second
+    // write if someone toggles an elimination off and on again.
+    resultsRecorded: false,
+    // Set when the last player standing has been asked. Without it, every
+    // subsequent elimination toggle would re-prompt them.
+    winOffered: false,
   };
 }
 
@@ -135,6 +141,8 @@ export class GameSession extends DurableObject {
     if (typeof state.activePlayerIndex !== "number") state.activePlayerIndex = 0;
     if (typeof state.turnStartedAt !== "number") state.turnStartedAt = Date.now();
     if (typeof state.oracleAsked !== "number") state.oracleAsked = 0;
+    if (typeof state.resultsRecorded !== "boolean") state.resultsRecorded = false;
+    if (typeof state.winOffered !== "boolean") state.winOffered = false;
     for (const player of Object.values(state.players || {})) {
       if (typeof player.muted !== "boolean") player.muted = false;
       if (!player.commanderDamage || typeof player.commanderDamage !== "object") player.commanderDamage = {};
@@ -145,11 +153,129 @@ export class GameSession extends DurableObject {
     }
   }
 
-  // state_sync goes to every connected client, so the PIN has to be stripped
-  // before it ever goes out on the wire.
+  // state_sync goes to every connected client, so anything the table has no
+  // business seeing is stripped here: the PIN, and each seat's account id.
+  //
+  // The account id matters more than it looks. It isn't a secret exactly, but
+  // it's the key every entitlement and every game record hangs off, and there
+  // is no reason three strangers who joined with a four-character code should
+  // be handed it. It's needed on the seat so a result can be recorded at game
+  // end; it is not needed by anyone's browser.
   publicState() {
-    const { pin, ...rest } = this.sessionState;
-    return { ...rest, pinRequired: pin !== null };
+    const { pin, players, ...rest } = this.sessionState;
+    const publicPlayers = {};
+    for (const [id, seat] of Object.entries(players || {})) {
+      const { userId, ...safe } = seat;
+      publicPlayers[id] = safe;
+    }
+    return { ...rest, players: publicPlayers, pinRequired: pin !== null };
+  }
+
+  // One player left standing ends the game — but it does not record it. It
+  // asks.
+  //
+  // The trigger is reliable; the conclusion isn't. Eliminations get toggled by
+  // mistake, a table can break up mid-game, and the last player standing has
+  // no reason to touch their phone. So the last player is asked to confirm,
+  // and if they decline or never answer, NOTHING is written — not even the
+  // losses the eliminated players already implied.
+  //
+  // A half-recorded game is worse than an unrecorded one: three losses and no
+  // win quietly drags every win rate down, and nobody can tell it happened.
+  // Manual entry exists precisely so the gap has an honest fix.
+  async offerWinIfOver() {
+    const state = this.sessionState;
+    if (!state || state.resultsRecorded || state.winOffered) return;
+
+    const seats = Object.values(state.players || {});
+    // Two is the smallest thing that can be won. One person eliminating
+    // themselves in an empty lobby is not a game.
+    if (seats.length < 2) return;
+
+    const alive = seats.filter((p) => !p.eliminated);
+    if (alive.length !== 1) return;
+
+    state.winOffered = true;
+    this.sendTo(alive[0].id, {
+      type: "confirm_win",
+      opponents: seats.filter((p) => p.id !== alive[0].id).map((p) => p.displayName || "Player"),
+    });
+  }
+
+  sendTo(playerId, message) {
+    const payload = JSON.stringify(message);
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws.deserializeAttachment()?.playerId !== playerId) continue;
+      try { ws.send(payload); } catch { /* the socket went away */ }
+    }
+  }
+
+  // Called only when the last player standing says yes.
+  //
+  // Writes straight to D1 from here. The entitlement check deliberately does
+  // NOT live in this class — verification belongs at the Worker, which is the
+  // trust boundary — but a result is different in kind: the outcome is
+  // something only this object knows, and passing it out to be written
+  // elsewhere would just add a hop where it could be forged.
+  async recordResult(claimantId) {
+    const state = this.sessionState;
+    if (!state || state.resultsRecorded) return { ok: false, error: "Already recorded." };
+
+    const seats = Object.values(state.players || {});
+    const alive = seats.filter((p) => !p.eliminated);
+    // Re-checked rather than trusted: the client was asked, but the answer
+    // arrives over a socket and the board may have moved since.
+    if (alive.length !== 1 || alive[0].id !== claimantId) {
+      return { ok: false, error: "The board changed — nothing recorded." };
+    }
+
+    // Set before the writes. A failed write must not leave the game eligible
+    // to record itself a second time.
+    state.resultsRecorded = true;
+    const winnerId = alive[0].id;
+    const gameId = `${state.sessionId}:${Date.now()}`;
+
+    // The snapshot every row carries. Guests are in here by name even though
+    // no row is written for them — it is the only way history can show a full
+    // table while only accounts get records.
+    const snapshot = JSON.stringify(
+      seats.map((p) => ({
+        name: (p.displayName || "Player").slice(0, 20),
+        commander: (p.commanderName || "").slice(0, 80),
+        identity: canonicalIdentity((p.colorIdentity || []).join("")) || "C",
+        won: p.id === winnerId ? 1 : 0,
+      }))
+    );
+
+    if (this.env?.DB) {
+      for (const seat of seats) {
+        const commander = (seat.commanderName || "").trim();
+        // Guests, and anyone who never named a commander, have nothing to
+        // record against.
+        if (!seat.userId || !commander) continue;
+        try {
+          await this.env.DB.prepare(
+            `INSERT OR IGNORE INTO game_history
+               (user_id, game_id, commander, identity, bracket, won, source, seats)
+             VALUES (?, ?, ?, ?, ?, ?, 'game', ?)`
+          )
+            .bind(
+              seat.userId, gameId, commander.slice(0, 80),
+              canonicalIdentity((seat.colorIdentity || []).join("")) || "C",
+              Number.isInteger(seat.bracket) ? seat.bracket : null,
+              seat.id === winnerId ? 1 : 0, snapshot
+            )
+            .run();
+        } catch (e) {
+          // A stat is not worth failing a game over.
+          console.error("history write failed:", e?.message || e);
+        }
+      }
+    }
+
+    this.broadcast({ type: "game_over", winnerPlayerId: winnerId });
+    await this.persist();
+    return { ok: true };
   }
 
   announceLethal(player) {
@@ -400,6 +526,10 @@ export class GameSession extends DurableObject {
         // put there at the handshake and a bare { playerId } would erase them,
         // quietly turning every paying player into a free one on join.
         ws.serializeAttachment({ ...att, playerId });
+        // Copied onto the seat so the result can be recorded at game end,
+        // when the socket that carried it may be long gone. Guests carry null
+        // and are simply not recorded.
+        this.sessionState.players[playerId].userId = att.entitlements?.userId || null;
         await this.persist();
 
         // Tell this client its assigned playerId (new joins only need
@@ -622,6 +752,7 @@ export class GameSession extends DurableObject {
             turnStartedAt: this.sessionState.turnStartedAt,
           });
         }
+        await this.offerWinIfOver();
         await this.persist();
         this.broadcast({ type: "state_sync", state: this.publicState() });
 
@@ -719,6 +850,21 @@ export class GameSession extends DurableObject {
           askedBy: (asker?.displayName || "").slice(0, 20),
           at: Date.now(),
         });
+        break;
+      }
+
+      // The last player standing answering the confirm_win prompt. "No" is a
+      // real answer: it leaves the game unrecorded rather than guessing, and
+      // closes the offer so they aren't asked again every time someone toggles
+      // an elimination.
+      case "claim_win": {
+        if (!msg.won) {
+          this.sessionState.resultsRecorded = true;
+          await this.persist();
+          break;
+        }
+        const result = await this.recordResult(att.playerId);
+        if (!result.ok) ws.send(JSON.stringify({ type: "error", message: result.error }));
         break;
       }
 
