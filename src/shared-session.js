@@ -95,6 +95,10 @@ function summarise(rows) {
 }
 
 async function entitlementRows(env, userId) {
+  // Failing closed is right — a database wobble must never hand out palettes
+  // nobody paid for — but failing SILENTLY is how a missing table spent an
+  // evening looking like an empty account. So: still return nothing, and say
+  // why where `wrangler tail` can see it.
   const { results } = await env.DB
     .prepare(
       `SELECT product FROM entitlements
@@ -102,7 +106,10 @@ async function entitlementRows(env, userId) {
     )
     .bind(userId)
     .all()
-    .catch(() => ({ results: [] }));
+    .catch((e) => {
+      console.error("entitlements read failed:", e?.message || e);
+      return { results: [] };
+    });
   return results || [];
 }
 
