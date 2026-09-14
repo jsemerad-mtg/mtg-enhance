@@ -364,6 +364,20 @@ function connectAndJoin(joinCode, lobbyInfo) {
         showCooldown(msg.soundId, msg.remainingMs);
         break;
       }
+      case "sound_locked": {
+        // The server refused a palette sound. In normal use this is
+        // unreachable — the board doesn't render locked sounds as buttons — so
+        // reaching it means our copy of the entitlements is stale, most likely
+        // a purchase that landed on another device. Re-read rather than
+        // arguing with the server, which is the side that knows.
+        refreshSession();
+        const warn = $("#board-warning");
+        if (warn) {
+          warn.textContent = "That palette isn't unlocked on this account.";
+          warn.hidden = false;
+        }
+        break;
+      }
       case "error": {
         if (msg.code === "bad_pin") {
           leftGame = true; // don't reconnect into a rejection loop
@@ -2030,6 +2044,14 @@ modalBody.addEventListener("click", async (e) => {
       // Take the server's word for the new state rather than decrementing a
       // local counter, which would drift the moment two devices are open.
       applySession({ ...account, ...data });
+      // The Durable Object reads entitlements once, at the handshake, so a
+      // palette bought mid-game doesn't reach it until the socket is remade.
+      // Reconnecting costs a state_sync and nothing else — the seat, the life
+      // totals and the turn order all come straight back.
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+        reconnectNow();
+      }
       return openSoundBoardModal();
     } catch (err) {
       unlock.disabled = false;

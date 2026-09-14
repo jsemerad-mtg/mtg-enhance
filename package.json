@@ -7,7 +7,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "build:commanders": "node scripts/build-commanders.js",
-    "test": "node tests/entitlements.test.mjs"
+    "test": "node tests/entitlements.test.mjs && node tests/sound-auth.test.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

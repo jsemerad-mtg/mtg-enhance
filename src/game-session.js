@@ -1,4 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
+import { soundAllowed } from "./sound-catalog.js";
+import { canonicalIdentity } from "./shared-session.js";
 
 // Session audio routing depends on `state.mode`, chosen by the host at
 // creation:
@@ -200,8 +202,30 @@ export class GameSession extends DurableObject {
 
     // Hibernatable accept: the DO can be evicted from memory between
     // messages and Cloudflare will wake it on the next inbound frame.
+    // Entitlements are read once, here, from the header the Worker set after
+    // verifying the session cookie — never from a client message. They ride on
+    // the socket's attachment so they survive hibernation along with playerId.
+    //
+    // A player who buys a palette mid-game reconnects rather than being
+    // upgraded in place: the handshake is the only point where anything is
+    // verified, so it's also the only honest place to change the answer.
+    let entitlements = { all: false, identities: [] };
+    try {
+      const raw = request.headers.get("X-Entitlements");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        entitlements = {
+          all: parsed.all === true,
+          identities: Array.isArray(parsed.identities) ? parsed.identities : [],
+        };
+      }
+    } catch {
+      // Malformed header: fall through as owning nothing. Universal sounds
+      // still work, so a bad parse costs a palette, never the whole game.
+    }
+
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ playerId: null });
+    server.serializeAttachment({ playerId: null, entitlements });
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -309,7 +333,10 @@ export class GameSession extends DurableObject {
         }
 
         this.sessionState.status = "active";
-        ws.serializeAttachment({ playerId });
+        // Spread the existing attachment, don't replace it: entitlements were
+        // put there at the handshake and a bare { playerId } would erase them,
+        // quietly turning every paying player into a free one on join.
+        ws.serializeAttachment({ ...att, playerId });
         await this.persist();
 
         // Tell this client its assigned playerId (new joins only need
@@ -580,6 +607,21 @@ export class GameSession extends DurableObject {
         // one device in a local game, every device in a remote one.
         const soundId = String(msg.soundId || "").slice(0, 40);
         if (!soundId) return;
+
+        // The board hides locked palettes, but hiding a button is not a
+        // control — this message can be sent by hand down an open socket. The
+        // entitlements consulted here came from the Worker's verification at
+        // the handshake, and the identity comes from this session's own player
+        // record, so nothing in this decision is client-supplied except the
+        // sound id itself.
+        const player = this.sessionState.players[att.playerId];
+        const identityKey =
+          canonicalIdentity((player?.colorIdentity || []).join("")) || "C";
+        if (!soundAllowed(soundId, att.entitlements, identityKey)) {
+          ws.send(JSON.stringify({ type: "sound_locked", soundId }));
+          return;
+        }
+
         const result = checkCooldown(this.sessionState, soundId, `${att.playerId}:${soundId}`);
         if (!result.ok) {
           ws.send(JSON.stringify({ type: "cooldown_rejected", soundId, remainingMs: result.remainingMs }));

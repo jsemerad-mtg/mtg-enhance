@@ -115,9 +115,27 @@ export default {
       if (!code || code.length !== 4) {
         return new Response("Invalid join code", { status: 400 });
       }
+
+      // The Durable Object is where sounds are authorised, but it can't read
+      // the session cookie itself — it has no D1 binding and no business
+      // holding one. So the Worker, which is already the trust boundary for
+      // every other request, verifies here and hands the *result* down.
+      //
+      // This header is set by us on an internal request that never leaves
+      // Cloudflare's network; the browser's own copy of it, if someone tried
+      // to send one, is overwritten below rather than merged.
+      const me = await currentUser(request, env).catch(() => ({ signedIn: false }));
+      const entitlements = JSON.stringify({
+        all: me.all === true,
+        identities: Array.isArray(me.identities) ? me.identities : [],
+      });
+
+      const headers = new Headers(request.headers);
+      headers.set("X-Entitlements", entitlements);
+
       const id = env.GAME_SESSION.idFromName(code);
       const stub = env.GAME_SESSION.get(id);
-      return stub.fetch(request);
+      return stub.fetch(new Request(request, { headers }));
     }
 
     // Everything else (index.html, client.js, style.css) is static.
