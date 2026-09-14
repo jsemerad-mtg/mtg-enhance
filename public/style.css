@@ -2012,3 +2012,32 @@ body::before {
 
 #btn-sit-down:disabled { opacity: 0.5; cursor: not-allowed; }
 #sit-hint { margin-top: 6px; text-align: center; }
+
+/* ---------- Decklist link ---------- */
+.clip-btn {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  margin-left: 4px;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  /* A paperclip emoji renders in full colour, which reads as decoration next
+     to this palette. Desaturated when empty, gold when something's attached —
+     so the row says at a glance which decks have a list. */
+  filter: grayscale(1) opacity(0.5);
+}
+.clip-btn:hover { filter: grayscale(0.4) opacity(0.9); }
+.clip-btn.has-link { filter: none; opacity: 1; }
+
+#deck-url { width: 100%; }
+.field #deck-url {
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.95rem;
+  padding: 10px 12px;
+}

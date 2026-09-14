@@ -68,6 +68,153 @@ await page.waitForFunction(() => recordsState === "ready");
     !/Nobody, the Unplayed\s*[–\d]/.test(r), r.slice(0, 200));
 }
 
+console.log("\ngrouping by colours");
+{
+  const r = await page.evaluate(() => {
+    showScreen("stats");
+    renderRecords();
+    document.querySelector('[data-view="identity"]').click();
+    return {
+      view: recordsView,
+      text: document.querySelector("#records-list").textContent.replace(/\s+/g, " "),
+      tappable: document.querySelectorAll("[data-history]").length,
+    };
+  });
+  check("switches view", r.view === "identity");
+  check("shows colour names, not commander names",
+    /White · Blue · Black · Green/.test(r.text) && !/Atraxa/.test(r.text), r.text.slice(0, 160));
+  check("colour rows open nothing — a colour has no history of its own",
+    r.tappable === 0, String(r.tappable));
+}
+{
+  const r = await page.evaluate(() => {
+    document.querySelector('[data-view="commander"]').click();
+    return document.querySelectorAll("[data-history]").length;
+  });
+  // Three, not two: the list merges the game log with saved decks, so a deck
+  // with no finished games has a row too.
+  check("commander rows are tappable again", r === 3, String(r));
+}
+
+console.log("\npast games for one commander");
+{
+  await page.evaluate(() => document.querySelector('[data-history]').click());
+  await page.waitForFunction(() => /Won|Lost/.test(document.querySelector("#modal-body").textContent));
+  const text = await page.evaluate(() =>
+    document.querySelector("#modal-body").textContent.replace(/\s+/g, " "));
+  check("a played game lists the whole table",
+    /Jay/.test(text) && /Sam/.test(text) && /Krenko, Mob Boss/.test(text), text.slice(0, 200));
+  check("the result is stated, not inferred", /Won/.test(text) && /Lost/.test(text));
+  check("the bracket shows when it was recorded", /Bracket 3/.test(text), text.slice(0, 200));
+  check("a manual game says so rather than showing an empty table",
+    /Added by hand/.test(text), text.slice(0, 260));
+  const winnerMarked = await page.evaluate(() =>
+    !!document.querySelector(".seat-won .seat-name"));
+  check("the winner is marked in the table, not left to be worked out", winnerMarked);
+}
+{
+  const before = await page.evaluate(() => document.querySelectorAll(".history-entry").length);
+  await page.evaluate(() => document.querySelector("[data-forget]").click());
+  await page.waitForTimeout(250);
+  const after = await page.evaluate(() => document.querySelectorAll(".history-entry").length);
+  check("removing a game takes it off the list", after === before - 1, `${before} -> ${after}`);
+}
+
+console.log("\nadding a game played elsewhere");
+{
+  const r = await page.evaluate(() => {
+    closeModal();
+    showScreen("stats");
+    renderRecords();
+    document.querySelector('[data-records="add"]').click();
+    const text = document.querySelector("#modal-body").textContent.replace(/\s+/g, " ");
+    const opts = [...document.querySelectorAll("#manual-bracket option")].map((o) => o.textContent);
+    return { text, opts };
+  });
+  check("explains it counts the same", /counts exactly the same/i.test(r.text), r.text.slice(0, 140));
+  check("bracket is optional and says so", r.opts[0] === "Not sure", r.opts.join("|"));
+  check("all five brackets are offered", r.opts.length === 6, String(r.opts.length));
+  check("named, not just numbered", /1 — Exhibition/.test(r.opts[1]) && /5 — cEDH/.test(r.opts[5]), r.opts.join("|"));
+}
+{
+  const r = await page.evaluate(() => {
+    document.querySelector("#manual-commander").value = "";
+    document.querySelector('[data-manual="1"]').click();
+    const err = document.querySelector("#manual-error");
+    return { hidden: err.hidden, text: err.textContent };
+  });
+  check("an empty commander is refused", r.hidden === false && /Name the commander/i.test(r.text), r.text);
+}
+{
+  // The identity must come along, or a hand-added Atraxa game lands in a
+  // second, colourless row instead of joining the played ones.
+  const sent = await page.evaluate(async () => {
+    let captured = null;
+    const real = window.fetch;
+    window.fetch = (u, o) => {
+      if (String(u).includes("/api/history/manual")) { captured = JSON.parse(o.body); }
+      return real(u, o);
+    };
+    document.querySelector("#manual-commander").value = "Atraxa, Grand Unifier";
+    document.querySelector("#manual-bracket").value = "4";
+    await submitManualGame(true);
+    window.fetch = real;
+    return captured;
+  });
+  check("sends the commander", sent?.commander === "Atraxa, Grand Unifier", JSON.stringify(sent));
+  check("sends the bracket as a number", sent?.bracket === 4, JSON.stringify(sent?.bracket));
+  check("sends won:true", sent?.won === true);
+  check("and carries the colours we already knew", sent?.identity === "WUBG", String(sent?.identity));
+}
+
+console.log("\nconfirming a win");
+{
+  const r = await page.evaluate(() => {
+    closeModal();
+    openModal("Last one standing", confirmWinHtml(["Sam", "Ali"]));
+    return document.querySelector("#modal-body").textContent.replace(/\s+/g, " ");
+  });
+  check("names who's out", /Sam, Ali/.test(r), r.slice(0, 120));
+  check("asks rather than announcing", /Did you win this game\?/.test(r));
+  // The whole point of the confirmation: "no" must not be read as "I lost".
+  check("says no records nothing at all", /records nothing at all/.test(r), r.slice(0, 240));
+  check("and spells out that the losses aren't recorded either",
+    /not even the losses/.test(r), r.slice(0, 260));
+  check("offers manual entry as the way back", /add the game by hand later/.test(r));
+}
+{
+  const sent = await page.evaluate(() => {
+    let captured = null;
+    const realSend = window.sendMessage;
+    window.sendMessage = (m) => { captured = m; return true; };
+    document.querySelector('[data-win="1"]').click();
+    window.sendMessage = realSend;
+    return captured;
+  });
+  check("yes claims the win", sent?.type === "claim_win" && sent?.won === true, JSON.stringify(sent));
+}
+{
+  const sent = await page.evaluate(() => {
+    openModal("Last one standing", confirmWinHtml(["Sam"]));
+    let captured = null;
+    const realSend = window.sendMessage;
+    window.sendMessage = (m) => { captured = m; return true; };
+    document.querySelector('[data-win="0"]').click();
+    window.sendMessage = realSend;
+    return captured;
+  });
+  check("no sends a real answer, not silence", sent?.type === "claim_win" && sent?.won === false,
+    JSON.stringify(sent));
+}
+{
+  const r = await page.evaluate(() => {
+    openModal("Game over", gameOverHtml("Sam", false));
+    return document.querySelector("#modal-body").textContent.replace(/\s+/g, " ");
+  });
+  check("the table is told who won", /Sam won/.test(r), r.slice(0, 120));
+  check("and that guests keep no record", /Guests at the table/.test(r), r.slice(0, 200));
+}
+
 console.log("\nunreachable");
 {
   const r = await page.evaluate(async () => {

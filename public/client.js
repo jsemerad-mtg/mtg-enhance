@@ -2371,7 +2371,7 @@ function applySession(next) {
   // Signing in mid-session should bring the records with it; signing out
   // should take them away rather than leaving the last account's numbers on
   // screen next to somebody else's name.
-  if (!next) { records = []; byIdentity = []; recordsState = "guest"; renderRecords(); renderFavorites(); }
+  if (!next) { records = []; byIdentity = []; decks = []; recordsState = "guest"; renderRecords(); renderFavorites(); }
   else if (!wasSignedIn) loadRecords();
 }
 
@@ -2550,6 +2550,7 @@ function openAuth(view = defaultAuthView(), arg) {
 // that went missing.
 let records = [];          // [{ commander, identity, wins, losses }]
 let byIdentity = [];       // the same games grouped by colour identity
+let decks = [];            // [{ id, commander, identity, bracket, deck_url }]
 let recordsState = "idle"; // "idle" | "loading" | "ready" | "failed" | "guest"
 
 function recordFor(name) {
@@ -2575,6 +2576,18 @@ async function loadRecords() {
     records = Array.isArray(data.byCommander) ? data.byCommander : [];
     byIdentity = Array.isArray(data.byIdentity) ? data.byIdentity : [];
     recordsState = data.signedIn ? "ready" : "guest";
+
+    // Decks are a separate table from the game log, and the list needs both: a
+    // deck saved but never played to a finish still deserves a row, and a
+    // commander with games but no saved deck still needs somewhere to put a
+    // link. Failing to load them costs the links, not the records.
+    try {
+      const dres = await fetch("/api/decks", { credentials: "include", cache: "no-store" });
+      const ddata = await dres.json();
+      decks = Array.isArray(ddata.decks) ? ddata.decks : [];
+    } catch {
+      decks = [];
+    }
   } catch {
     // Same rule as the session check: a request that didn't come back is not
     // evidence that someone has no record.
@@ -2595,6 +2608,31 @@ let recordsView = "commander";
 function winRate(w, l) {
   const played = w + l;
   return played ? `${Math.round((w / played) * 100)}%` : "—";
+}
+
+// One row per commander, from the game log and the deck list together. A deck
+// with no finished games still belongs here — that is exactly when someone
+// wants to paste the decklist in.
+function commanderRows() {
+  const byName = new Map();
+  for (const r of records) {
+    byName.set(r.commander.toLowerCase(), {
+      commander: r.commander, identity: r.identity || "",
+      wins: r.wins, losses: r.losses, deck: null,
+    });
+  }
+  for (const d of decks) {
+    const key = d.commander.toLowerCase();
+    const row = byName.get(key);
+    if (row) { row.deck = d; if (!row.identity) row.identity = d.identity || ""; }
+    else byName.set(key, {
+      commander: d.commander, identity: d.identity || "",
+      wins: 0, losses: 0, deck: d,
+    });
+  }
+  return [...byName.values()].sort(
+    (a, b) => (b.wins + b.losses) - (a.wins + a.losses) || a.commander.localeCompare(b.commander)
+  );
 }
 
 function recordsHtml() {
@@ -2620,7 +2658,8 @@ function recordsHtml() {
   const addGame = `<button class="btn btn-secondary btn-sm add-game" type="button"
     data-records="add">Add a game played elsewhere</button>`;
 
-  if (!records.length) {
+  const rowData = commanderRows();
+  if (!rowData.length) {
     return `${toggle}
       <p class="empty-state">No games yet. A result is recorded when a game ends and the last
       player standing confirms the win — or you can add one you played away from the app.</p>
@@ -2636,17 +2675,92 @@ function recordsHtml() {
       </li>`)
     // Only the per-commander rows are tappable: there is no such thing as the
     // history of a colour combination, only of the decks inside it.
-    : records.map((r) => `<li class="fav-row">
+    : rowData.map((r) => `<li class="fav-row">
         <button type="button" class="fav-name link-name" data-history="${escapeHtml(r.commander)}">
           ${escapeHtml(r.commander)}</button>
         ${pipsHtml(r.identity === "C" ? "" : r.identity)}
         <span class="wl"><span class="wl-w">${r.wins}</span><span class="wl-sep">–</span><span class="wl-l">${r.losses}</span></span>
         <span class="wl-pct">${winRate(r.wins, r.losses)}</span>
+        <button type="button" class="clip-btn${r.deck?.deck_url ? " has-link" : ""}"
+          data-deck="${escapeHtml(r.commander)}"
+          aria-label="${r.deck?.deck_url ? "Edit the decklist link for" : "Add a decklist link for"} ${escapeHtml(r.commander)}"
+          title="${r.deck?.deck_url ? "Decklist attached" : "Attach a decklist"}">&#128206;</button>
       </li>`);
 
   return `${toggle}<ul class="fav-list">${rows.join("")}</ul>
     ${recordsView === "commander" ? `<p class="field-note">Tap a commander to see its past games.</p>` : ""}
     ${addGame}`;
+}
+
+// ---------- decklist links ----------
+function deckLinkHtml(row) {
+  const url = row.deck?.deck_url || "";
+  return `<p>Paste a link to this deck — Moxfield, Archidekt, a Google Doc, anywhere.
+    It's stored as a link and nothing else; we never open or read it.</p>
+    <label class="field">
+      <span>Decklist URL</span>
+      <input id="deck-url" type="url" inputmode="url" maxlength="500" autocomplete="off"
+        placeholder="https://" value="${escapeHtml(url)}" />
+    </label>
+    <p id="deck-error" class="field-note error" hidden></p>
+    <p id="deck-note" class="field-note" hidden></p>
+    <div class="manual-actions">
+      <button class="btn btn-primary" type="button" data-deck-save="${escapeHtml(row.commander)}">Save</button>
+      <button class="btn btn-secondary" type="button" data-deck-copy="1"${url ? "" : " disabled"}>Copy</button>
+    </div>
+    ${url ? `<div class="auth-links">
+      <button class="link-btn" type="button" data-deck-clear="${escapeHtml(row.commander)}">Remove the link</button>
+    </div>` : ""}`;
+}
+
+function openDeckLink(commander) {
+  const row = commanderRows().find((r) => r.commander === commander);
+  if (!row) return;
+  openModal(commander, deckLinkHtml(row));
+}
+
+async function saveDeckLink(commander, rawUrl) {
+  const row = commanderRows().find((r) => r.commander === commander);
+  const err = $("#deck-error");
+  err.hidden = true;
+
+  const url = rawUrl.trim();
+  if (url) {
+    // Checked here as well as at the server so a typo is answered instantly
+    // rather than after a round trip.
+    let parsed;
+    try { parsed = new URL(url); } catch { parsed = null; }
+    if (!parsed || (parsed.protocol !== "https:" && parsed.protocol !== "http:")) {
+      err.textContent = "That doesn't look like a web link — it should start with https://";
+      err.hidden = false;
+      return false;
+    }
+  }
+
+  const res = await fetch("/api/decks", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      commander,
+      identity: row?.identity || "",
+      // The upsert replaces every column it's given, so the existing bracket
+      // has to come along. Leaving it out would silently erase a bracket the
+      // player set in the lobby — the kind of loss nobody notices until their
+      // history stops saying what it used to.
+      bracket: row?.deck?.bracket ?? null,
+      deckUrl: url,
+    }),
+  }).catch(() => null);
+
+  const data = await res?.json().catch(() => ({}));
+  if (!res?.ok || !data?.ok) {
+    err.textContent = data?.error || "Couldn't save that link.";
+    err.hidden = false;
+    return false;
+  }
+  await loadRecords();
+  return true;
 }
 
 // ---------- one commander's past games ----------
@@ -2789,12 +2903,47 @@ $("#records-list").addEventListener("click", (e) => {
   }
   const hist = e.target.closest("[data-history]");
   if (hist) return openHistory(hist.dataset.history);
+  const clip = e.target.closest("[data-deck]");
+  if (clip) return openDeckLink(clip.dataset.deck);
   if (e.target.closest('[data-records="add"]')) {
     openModal("Add a game", addGameHtml());
   }
 });
 
 modalBody.addEventListener("click", async (e) => {
+  const save = e.target.closest("[data-deck-save]");
+  if (save) {
+    save.disabled = true;
+    const ok = await saveDeckLink(save.dataset.deckSave, $("#deck-url").value);
+    save.disabled = false;
+    if (ok) closeModal();
+    return;
+  }
+
+  const clear = e.target.closest("[data-deck-clear]");
+  if (clear) {
+    if (await saveDeckLink(clear.dataset.deckClear, "")) closeModal();
+    return;
+  }
+
+  const copy = e.target.closest("[data-deck-copy]");
+  if (copy) {
+    const note = $("#deck-note");
+    const value = $("#deck-url").value.trim();
+    try {
+      await navigator.clipboard.writeText(value);
+      note.textContent = "Copied.";
+    } catch {
+      // Clipboard access is refused in plenty of ordinary situations — an
+      // insecure origin, a permission prompt declined, an older browser. Say
+      // so and select the text instead, so there's still a way to copy it.
+      $("#deck-url").select();
+      note.textContent = "Couldn't copy for you — the link is selected, so copy it now.";
+    }
+    note.hidden = false;
+    return;
+  }
+
   const manual = e.target.closest("[data-manual]");
   if (manual) return submitManualGame(manual.dataset.manual === "1");
 
