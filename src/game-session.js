@@ -55,8 +55,19 @@ function initialState(sessionId, mode = "colocated", pin = null) {
     // player can hold each, so one field apiece is the honest shape.
     monarchPlayerId: null,
     initiativePlayerId: null,
+    // Ask the Oracle. The allowance is per TABLE, not per player, because a
+    // per-player one would have to trust the client's word about who is
+    // asking — and burning someone else's allowance is a nastier prank than
+    // burning the table's. It's also the honest thing to show: "this table has
+    // 7 questions left" is a sentence four people can reason about together.
+    oracleAsked: 0,
   };
 }
+
+// Generous enough that a real game never notices, small enough that a
+// shared join code can't run up a bill. Oracle's own per-user rate limit
+// (120/min signed in) is the backstop behind this, not the front line.
+export const ORACLE_ASKS_PER_GAME = 10;
 
 // Poke is a "hurry up" nudge, so it's only allowed against the player who is
 // actually holding the table up: the active player, one minute into their turn.
@@ -123,6 +134,7 @@ export class GameSession extends DurableObject {
     if (state.initiativePlayerId === undefined) state.initiativePlayerId = null;
     if (typeof state.activePlayerIndex !== "number") state.activePlayerIndex = 0;
     if (typeof state.turnStartedAt !== "number") state.turnStartedAt = Date.now();
+    if (typeof state.oracleAsked !== "number") state.oracleAsked = 0;
     for (const player of Object.values(state.players || {})) {
       if (typeof player.muted !== "boolean") player.muted = false;
       if (!player.commanderDamage || typeof player.commanderDamage !== "object") player.commanderDamage = {};
@@ -176,6 +188,57 @@ export class GameSession extends DurableObject {
         pinRequired: !!this.sessionState?.pin,
         mode: this.sessionState?.mode ?? null,
       });
+    }
+
+    // ── Ask the Oracle: reserve / answer / refund ───────────────────────────
+    // Three small steps rather than one, because the allowance has to be spent
+    // BEFORE the model call, not after — otherwise two people tapping at once
+    // both see "10 left" and both spend. Reserve first, then call Oracle, then
+    // either deliver the answer or hand the slot back.
+    //
+    // Only Enhance's own Worker reaches these paths. The browser cannot: the
+    // Durable Object is not addressable from outside, and the Worker is what
+    // holds the verified session.
+    if (url.pathname === "/oracle/reserve") {
+      if (!this.sessionState) return Response.json({ ok: false, error: "No such game." }, { status: 404 });
+      this.ensureShape();
+      const left = ORACLE_ASKS_PER_GAME - this.sessionState.oracleAsked;
+      if (left <= 0) {
+        return Response.json({ ok: false, error: "This table has used all its Oracle questions." });
+      }
+      this.sessionState.oracleAsked += 1;
+      await this.persist();
+      return Response.json({ ok: true, asksLeft: left - 1 });
+    }
+
+    if (url.pathname === "/oracle/refund") {
+      if (this.sessionState) {
+        this.ensureShape();
+        this.sessionState.oracleAsked = Math.max(0, this.sessionState.oracleAsked - 1);
+        await this.persist();
+      }
+      return Response.json({ ok: true });
+    }
+
+    // The broadcast. Everything in the payload was obtained by the Worker —
+    // the question came from a player, but the ANSWER text is fetched from
+    // Oracle server-side and never passes through a client. That's the whole
+    // reason this is an HTTP hop instead of a WebSocket message: a client that
+    // could hand the table arbitrary prose could hand it anything.
+    if (url.pathname === "/oracle/answer") {
+      if (!this.sessionState) return Response.json({ ok: false }, { status: 404 });
+      const body = await request.json().catch(() => ({}));
+      this.broadcast({
+        type: "oracle_event",
+        kind: "rules",
+        askedBy: String(body.askedBy || "").slice(0, 40),
+        question: String(body.question || "").slice(0, 400),
+        answer: String(body.answer || "").slice(0, 4000),
+        rulesCited: Array.isArray(body.rulesCited) ? body.rulesCited.slice(0, 8) : [],
+        at: Date.now(),
+      });
+      this.broadcast({ type: "state_sync", state: this.publicState() });
+      return Response.json({ ok: true });
     }
 
     if (url.pathname === "/claim") {
@@ -629,6 +692,33 @@ export class GameSession extends DurableObject {
         }
         this.playShared({ soundId, fromPlayerId: att.playerId });
         this.announceActivity(att.playerId, "library");
+        break;
+      }
+
+      // "What's that card do?" — the question people currently answer by
+      // holding a card up to a webcam.
+      //
+      // Only a Scryfall id crosses the wire. Not the name, not the oracle
+      // text, not the image: every client fetches the card from Scryfall
+      // itself and renders what Scryfall returns. That makes it impossible to
+      // put arbitrary text on another player's screen through this path — the
+      // worst a forged id can do is fail to resolve — and it costs no model
+      // tokens at all, because no model is involved.
+      //
+      // Scryfall blocks Cloudflare Worker IPs, which is why the lookup happens
+      // in the browser and not here.
+      case "oracle_card": {
+        const id = String(msg.scryfallId || "");
+        // Scryfall ids are UUIDs. Anything else never reaches another client.
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return;
+        const asker = this.sessionState.players[att.playerId];
+        this.broadcast({
+          type: "oracle_event",
+          kind: "card",
+          scryfallId: id,
+          askedBy: (asker?.displayName || "").slice(0, 20),
+          at: Date.now(),
+        });
         break;
       }
 

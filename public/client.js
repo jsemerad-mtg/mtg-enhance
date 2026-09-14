@@ -63,6 +63,15 @@ function playDrawCard() {
   tone({ freq: 500, duration: 0.05, type: "square", gain: 0.1, delay: 0.05 });
 }
 
+// Oracle answer arriving at the table: a soft two-note chime, rising, clearly
+// not a combat sound. Deliberately quieter than anything in the soundboard —
+// it announces information, not an attack, and it can land while someone is
+// mid-sentence.
+function playOracleChime() {
+  tone({ freq: 587, duration: 0.14, type: "sine", gain: 0.14 });
+  tone({ freq: 880, duration: 0.22, type: "sine", gain: 0.12, delay: 0.11 });
+}
+
 // Self taunt: a quick two-note blip.
 function playTaunt() {
   tone({ freq: 660, duration: 0.12, type: "triangle", gain: 0.2 });
@@ -349,6 +358,7 @@ function connectAndJoin(joinCode, lobbyInfo) {
         if (msg.soundId === "ambient_off") stopAmbient();
         if (msg.soundId === "poke") playPoke();
         if (msg.soundId === "pass_turn") playPassTurn();
+        if (msg.soundId === "oracle") playOracleChime();
         if (LIBRARY_BY_ID[msg.soundId]) playLibrarySound(msg.soundId);
         break;
       }
@@ -362,6 +372,10 @@ function connectAndJoin(joinCode, lobbyInfo) {
         // "_started" additionally reaches players who didn't press the
         // button themselves, for Board Wipe's shared cooldown.
         showCooldown(msg.soundId, msg.remainingMs);
+        break;
+      }
+      case "oracle_event": {
+        receiveOracleEvent(msg);
         break;
       }
       case "sound_locked": {
@@ -1027,17 +1041,255 @@ const HELP_HTML = `
   receiving sounds.</p>
 `;
 
-const ORACLE_HTML = `
-  <p class="placeholder-flag">Not built yet — this is a placeholder.</p>
-  <p>This is where you'll settle rules arguments without leaving the game. Ask
-  a question, get an answer from MTG Oracle, and choose whether to push it to
-  the table — it'll appear as a card in every player's feed.</p>
-  <p>Answers stay private until you share them, so you can check a ruling
-  without telegraphing what you're holding.</p>
-`;
+// ---------- Ask the Oracle ----------
+// Two different things behind one button, and the difference matters:
+//
+//   Show a card — a Scryfall lookup. Free, instant, exact, and it answers the
+//   question people currently answer by holding a card up to a webcam. Only
+//   the card's Scryfall id crosses the wire; every client fetches the card
+//   itself, so nobody can put words on anyone else's screen this way.
+//
+//   Ask a rules question — a model call, grounded in the Comprehensive Rules.
+//   Costs money, takes seconds, and is capped per table.
+//
+// The card path is listed first on purpose: it's the one most questions
+// actually want, and it costs nothing.
+const ORACLE_ASKS_PER_GAME = 10;
+
+let oracleFeed = [];          // newest first
+let oracleUnread = 0;
+let oracleAsking = false;
+
+function speechSupported() {
+  return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+}
+
+function micButton(target) {
+  // Hidden entirely where the API is missing rather than shown-and-dead —
+  // iOS Safari is the common case, and a button that does nothing when tapped
+  // reads as a broken app, not an unsupported browser.
+  if (!speechSupported()) return "";
+  return `<button type="button" class="mic-btn" data-mic="${target}" aria-label="Dictate">🎤</button>`;
+}
+
+function oracleHtml() {
+  const asksLeft = Math.max(0, ORACLE_ASKS_PER_GAME - (session.oracleAsked || 0));
+  return `
+    <div class="oracle-pane">
+      <h3>Show a card</h3>
+      <p class="board-hint">Puts the real card on everyone's screen — no more holding it up to the camera.</p>
+      <div class="oracle-row">
+        <input id="oracle-card-input" type="text" placeholder="Card name" autocomplete="off" maxlength="120" />
+        ${micButton("oracle-card-input")}
+        <button class="btn btn-primary btn-sm" type="button" data-oracle="card">Show</button>
+      </div>
+      <p id="oracle-card-note" class="field-note" hidden></p>
+
+      <h3>Ask a rules question</h3>
+      <p class="board-hint">Answered from the Comprehensive Rules, with the rule quoted.
+        ${asksLeft} ${asksLeft === 1 ? "question" : "questions"} left at this table.</p>
+      <div class="oracle-row">
+        <textarea id="oracle-question" rows="2" maxlength="400"
+          placeholder="If I sacrifice it in response to the trigger, does the trigger still resolve?"></textarea>
+        ${micButton("oracle-question")}
+      </div>
+      <div class="oracle-row">
+        <span id="oracle-count" class="field-note">0 / 400</span>
+        <button class="btn btn-primary btn-sm" type="button" data-oracle="ask"
+          ${asksLeft <= 0 ? "disabled" : ""}>Ask the table</button>
+      </div>
+      <p id="oracle-error" class="field-note error" hidden></p>
+
+      <h3>At this table</h3>
+      <div id="oracle-feed">${oracleFeedHtml()}</div>
+    </div>`;
+}
+
+function oracleFeedHtml() {
+  if (!oracleFeed.length) {
+    return `<p class="empty-state">Nothing asked yet. Anything answered here is shown to everyone.</p>`;
+  }
+  return oracleFeed
+    .map((e) =>
+      e.kind === "card"
+        ? `<div class="oracle-card-entry" data-scryfall="${escapeHtml(e.scryfallId)}">
+             <p class="field-note">${escapeHtml(e.askedBy || "Someone")} showed a card</p>
+             <div class="oracle-card-body">Loading…</div>
+           </div>`
+        : `<div class="oracle-entry">
+             <p class="oracle-q">${escapeHtml(e.askedBy || "Someone")} asked: ${escapeHtml(e.question)}</p>
+             <div class="oracle-a">${oracleMarkup(e.answer)}</div>
+           </div>`
+    )
+    .join("");
+}
+
+// The answer is model-written text, so it is escaped first and only then given
+// the two pieces of formatting it actually uses. Nothing here can introduce a
+// tag, an attribute or a URL that wasn't already plain text.
+function oracleMarkup(text) {
+  return escapeHtml(String(text || ""))
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\n/g, "<br>");
+}
+
+// Each client resolves the card itself from the broadcast id. Scryfall blocks
+// Cloudflare Worker IPs, so this could never have been a server-side fetch —
+// which turns out to be the safer design anyway.
+async function fillOracleCards() {
+  for (const el of document.querySelectorAll("[data-scryfall]")) {
+    if (el.dataset.filled) continue;
+    el.dataset.filled = "1";
+    const body = el.querySelector(".oracle-card-body");
+    try {
+      const res = await fetch(`https://api.scryfall.com/cards/${encodeURIComponent(el.dataset.scryfall)}`);
+      if (!res.ok) throw new Error(String(res.status));
+      const card = await res.json();
+      const img = card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal || "";
+      const oracle = card.oracle_text || card.card_faces?.map((f) => f.oracle_text).join("\n//\n") || "";
+      body.innerHTML = `
+        ${img ? `<img class="oracle-card-img" src="${escapeHtml(img)}" alt="${escapeHtml(card.name)}" loading="lazy" />` : ""}
+        <p class="oracle-card-name">${escapeHtml(card.name)}</p>
+        <p class="oracle-card-text">${escapeHtml(oracle).replace(/\n/g, "<br>")}</p>`;
+    } catch {
+      body.textContent = "Couldn't load that card.";
+    }
+  }
+}
+
+function openOracle() {
+  oracleUnread = 0;
+  renderOracleBadge();
+  openModal("Ask the Oracle", oracleHtml());
+  modalBody.classList.add("oracle-modal");
+  fillOracleCards();
+}
+
+// The O pulses until it's opened. Someone mid-turn shouldn't have to watch the
+// screen to know an answer landed — but it also stops the moment they look.
+function renderOracleBadge() {
+  const btn = $("#btn-oracle");
+  if (!btn) return;
+  btn.classList.toggle("has-news", oracleUnread > 0);
+  btn.setAttribute(
+    "aria-label",
+    oracleUnread > 0 ? `Ask the Oracle — ${oracleUnread} new` : "Ask the Oracle a rules question"
+  );
+}
+
+function receiveOracleEvent(msg) {
+  oracleFeed = [msg, ...oracleFeed].slice(0, 20);
+  const open = !modalBackdrop.hidden && modalBody.classList.contains("oracle-modal");
+  if (open) {
+    const feed = $("#oracle-feed");
+    if (feed) { feed.innerHTML = oracleFeedHtml(); fillOracleCards(); }
+  } else {
+    oracleUnread += 1;
+    renderOracleBadge();
+  }
+  if (!muted) playOracleChime();
+}
+
+async function showCardToTable() {
+  const input = $("#oracle-card-input");
+  const note = $("#oracle-card-note");
+  const name = input.value.trim();
+  if (!name) return;
+  note.hidden = false;
+  note.textContent = "Looking it up…";
+  try {
+    // fuzzy, not exact: dictation and typos both produce near-misses, and
+    // Scryfall is good at them.
+    const res = await fetch(`${SCRYFALL_NAMED}?fuzzy=${encodeURIComponent(name)}`);
+    if (!res.ok) throw new Error(res.status === 404 ? "No card by that name." : `Scryfall ${res.status}`);
+    const card = await res.json();
+    sendMessage({ type: "oracle_card", scryfallId: card.id });
+    input.value = "";
+    note.textContent = `Showed ${card.name} to the table.`;
+  } catch (err) {
+    note.textContent = String(err.message || err);
+  }
+}
+
+async function askTheOracle() {
+  if (oracleAsking) return;
+  const box = $("#oracle-question");
+  const err = $("#oracle-error");
+  const question = box.value.trim();
+  err.hidden = true;
+  if (!question) return;
+
+  oracleAsking = true;
+  const btn = modalBody.querySelector('[data-oracle="ask"]');
+  if (btn) { btn.disabled = true; btn.textContent = "Asking…"; }
+  try {
+    const res = await fetch("/api/oracle/ask", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, question, askedBy: session.players?.[selfId]?.displayName || "" }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    box.value = "";
+    // The answer arrives over the socket like everyone else's — no special
+    // case for the asker, so what they see is exactly what the table sees.
+  } catch (e) {
+    err.textContent = String(e.message || e);
+    err.hidden = false;
+  } finally {
+    oracleAsking = false;
+    if (btn) { btn.disabled = false; btn.textContent = "Ask the table"; }
+  }
+}
+
+// ---------- dictation ----------
+// Browser-native, so it costs nothing and sends no audio anywhere. It is also
+// wrong often enough at a noisy table that the transcript always lands in the
+// input for review rather than being submitted.
+let recognition = null;
+function startDictation(targetId, btn) {
+  const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Ctor) return;
+  if (recognition) { recognition.stop(); recognition = null; btn.classList.remove("listening"); return; }
+  const target = document.getElementById(targetId);
+  if (!target) return;
+
+  recognition = new Ctor();
+  recognition.lang = navigator.language || "en-US";
+  recognition.interimResults = true;
+  recognition.continuous = false;
+  const before = target.value ? target.value.trim() + " " : "";
+
+  recognition.onstart = () => btn.classList.add("listening");
+  recognition.onresult = (ev) => {
+    let heard = "";
+    for (const result of ev.results) heard += result[0].transcript;
+    target.value = (before + heard).slice(0, Number(target.maxLength) > 0 ? target.maxLength : 400);
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  recognition.onerror = () => { btn.classList.remove("listening"); recognition = null; };
+  recognition.onend = () => { btn.classList.remove("listening"); recognition = null; };
+  recognition.start();
+}
 
 $("#btn-help").addEventListener("click", () => openModal("How this works", HELP_HTML));
-$("#btn-oracle").addEventListener("click", () => openModal("Ask the Oracle", ORACLE_HTML));
+$("#btn-oracle").addEventListener("click", openOracle);
+
+modalBody.addEventListener("input", (e) => {
+  if (e.target.id !== "oracle-question") return;
+  const count = $("#oracle-count");
+  if (count) count.textContent = `${e.target.value.length} / 400`;
+});
+
+modalBody.addEventListener("click", (e) => {
+  const mic = e.target.closest("[data-mic]");
+  if (mic) return startDictation(mic.dataset.mic, mic);
+
+  const action = e.target.closest("[data-oracle]")?.dataset.oracle;
+  if (action === "card") return showCardToTable();
+  if (action === "ask") return askTheOracle();
+});
 
 
 // ---------- connection resilience ----------
