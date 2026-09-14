@@ -485,6 +485,22 @@ function connectAndJoin(joinCode, lobbyInfo) {
         showCooldown(msg.soundId, msg.remainingMs);
         break;
       }
+      // Only the last player standing gets this, and only once per game.
+      case "confirm_win": {
+        openModal("Last one standing", confirmWinHtml(msg.opponents));
+        break;
+      }
+
+      // Everyone gets this once the winner has confirmed. setNote() would have
+      // been wrong here — it writes to the lobby's commander field, which
+      // nobody is looking at during a game.
+      case "game_over": {
+        const winner = session.players?.[msg.winnerPlayerId];
+        const mine = msg.winnerPlayerId === selfId;
+        openModal(mine ? "You won" : "Game over", gameOverHtml(winner?.displayName, mine));
+        break;
+      }
+
       case "oracle_event": {
         receiveOracleEvent(msg);
         break;
@@ -1001,6 +1017,28 @@ function pipsHtml(ci) {
   return `<span class="suggestion-pips">${letters
     .map((c) => `<span class="color-dot color-${c.toLowerCase()}"></span>`)
     .join("")}</span>`;
+}
+
+// Built here rather than inline in the socket handler so it can be rendered
+// and checked without a live game — the wording is the whole feature, and it
+// is the one screen that decides whether a result is recorded at all.
+function confirmWinHtml(opponents) {
+  const names = (opponents || []).map(escapeHtml).join(", ");
+  return `<p>Everyone else is out${names ? ` — ${names}` : ""}. Did you win this game?</p>
+    <p class="field-note">Saying yes records the result for everyone at the table who's signed
+    in. Saying no records nothing at all — not even the losses — and you can still add the game
+    by hand later.</p>
+    <button class="btn btn-primary" type="button" data-win="1">Yes, I won</button>
+    <div class="auth-links">
+      <button class="link-btn" type="button" data-win="0">No — don't record this game</button>
+    </div>`;
+}
+
+function gameOverHtml(winnerName, mine) {
+  return `<p>${mine ? "You were the last one standing." : `${escapeHtml(winnerName || "Someone")} won.`}</p>
+    <p class="field-note">Recorded against each signed-in player's commander. Guests at the
+    table appear in the history but keep no record of their own.</p>
+    <button class="btn btn-primary" type="button" data-step-cancel="1">Close</button>`;
 }
 
 function setNote(text, warn = false) {
@@ -2479,6 +2517,19 @@ async function loadRecords() {
   renderFavorites();
 }
 
+const BRACKETS = { 1: "Exhibition", 2: "Core", 3: "Upgraded", 4: "Optimized", 5: "cEDH" };
+
+// "By commander" and "By colours" are the same games grouped two ways —
+// someone with six mono-red decks cares more about how red does than how each
+// build does. It's one log and two GROUP BYs on the server, so offering both
+// costs a toggle, not a feature.
+let recordsView = "commander";
+
+function winRate(w, l) {
+  const played = w + l;
+  return played ? `${Math.round((w / played) * 100)}%` : "—";
+}
+
 function recordsHtml() {
   if (recordsState === "guest") {
     return `<p class="empty-state">Sign in and your wins and losses are kept with each
@@ -2491,22 +2542,164 @@ function recordsHtml() {
     return `<p class="empty-state">Couldn't load your records just now. This isn't a
       reset — try again in a moment.</p>`;
   }
+
+  const toggle = `<div class="seg">
+    <button type="button" class="seg-btn${recordsView === "commander" ? " is-on" : ""}"
+      data-view="commander">By commander</button>
+    <button type="button" class="seg-btn${recordsView === "identity" ? " is-on" : ""}"
+      data-view="identity">By colours</button>
+  </div>`;
+
+  const addGame = `<button class="btn btn-secondary btn-sm add-game" type="button"
+    data-records="add">Add a game played elsewhere</button>`;
+
   if (!records.length) {
-    return `<p class="empty-state">No games recorded yet. A result is written when a game
-      ends with one player still standing.</p>`;
+    return `${toggle}
+      <p class="empty-state">No games yet. A result is recorded when a game ends and the last
+      player standing confirms the win — or you can add one you played away from the app.</p>
+      ${addGame}`;
   }
-  return `<ul class="fav-list">${records
-    .map((r) => {
-      const played = r.wins + r.losses;
-      const pct = played ? Math.round((r.wins / played) * 100) : 0;
-      return `<li class="fav-row">
-        <span class="fav-name">${escapeHtml(r.commander)}</span>
+
+  const rows = recordsView === "identity"
+    ? byIdentity.map((r) => `<li class="fav-row">
+        <span class="fav-name">${escapeHtml(paletteLabel(r.identity || "C"))}</span>
         ${pipsHtml(r.identity === "C" ? "" : r.identity)}
         <span class="wl"><span class="wl-w">${r.wins}</span><span class="wl-sep">–</span><span class="wl-l">${r.losses}</span></span>
-        <span class="wl-pct">${pct}%</span>
+        <span class="wl-pct">${winRate(r.wins, r.losses)}</span>
+      </li>`)
+    // Only the per-commander rows are tappable: there is no such thing as the
+    // history of a colour combination, only of the decks inside it.
+    : records.map((r) => `<li class="fav-row">
+        <button type="button" class="fav-name link-name" data-history="${escapeHtml(r.commander)}">
+          ${escapeHtml(r.commander)}</button>
+        ${pipsHtml(r.identity === "C" ? "" : r.identity)}
+        <span class="wl"><span class="wl-w">${r.wins}</span><span class="wl-sep">–</span><span class="wl-l">${r.losses}</span></span>
+        <span class="wl-pct">${winRate(r.wins, r.losses)}</span>
+      </li>`);
+
+  return `${toggle}<ul class="fav-list">${rows.join("")}</ul>
+    ${recordsView === "commander" ? `<p class="field-note">Tap a commander to see its past games.</p>` : ""}
+    ${addGame}`;
+}
+
+// ---------- one commander's past games ----------
+async function openHistory(commander) {
+  openModal(commander, `<p class="empty-state">Loading…</p>`);
+  modalBody.classList.add("history-modal");
+  try {
+    const res = await fetch(`/api/history?commander=${encodeURIComponent(commander)}`, {
+      credentials: "include", cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    modalBody.innerHTML = historyHtml(data.games || []);
+  } catch {
+    modalBody.innerHTML = `<p class="empty-state">Couldn't load those games just now.</p>`;
+  }
+}
+
+function historyHtml(games) {
+  if (!games.length) return `<p class="empty-state">No games recorded with this commander yet.</p>`;
+  return `<ul class="history-list">${games
+    .map((g) => {
+      const when = String(g.played_at || "").slice(0, 10);
+      const bracket = g.bracket ? ` · Bracket ${g.bracket}` : "";
+      // A manual row has no seats, because there was nobody to name. Showing
+      // an empty table would imply the opponents were lost rather than never
+      // collected.
+      const table = Array.isArray(g.seats) && g.seats.length
+        ? `<ul class="seat-list">${g.seats
+            .map((seat) => `<li class="seat${seat.won ? " seat-won" : ""}">
+              <span class="seat-name">${escapeHtml(seat.name || "Player")}</span>
+              <span class="seat-cmd">${escapeHtml(seat.commander || "—")}</span>
+              ${pipsHtml(seat.identity === "C" ? "" : seat.identity || "")}
+            </li>`)
+            .join("")}</ul>`
+        : `<p class="field-note">Added by hand — no table recorded.</p>`;
+      return `<li class="history-entry">
+        <p class="history-head">
+          <span class="history-result ${g.won ? "is-win" : "is-loss"}">${g.won ? "Won" : "Lost"}</span>
+          <span class="field-note">${escapeHtml(when)}${bracket}</span>
+          <button type="button" class="link-btn history-del" data-forget="${g.id}">Remove</button>
+        </p>
+        ${table}
       </li>`;
     })
     .join("")}</ul>`;
+}
+
+// ---------- a game played away from the app ----------
+function addGameHtml() {
+  const options = favorites
+    .map((f) => splitFavorite(f)[0])
+    .concat(records.map((r) => r.commander))
+    .filter((v, i, a) => v && a.indexOf(v) === i);
+  return `<p>Played somewhere without the app? Add it here and it counts exactly the same.</p>
+    <label class="field">
+      <span>Commander</span>
+      <input id="manual-commander" type="text" maxlength="80" autocomplete="off"
+        list="manual-commanders" />
+    </label>
+    <datalist id="manual-commanders">${options
+      .map((o) => `<option value="${escapeHtml(o)}"></option>`).join("")}</datalist>
+    <label class="field">
+      <span>Bracket (optional)</span>
+      <select id="manual-bracket">
+        <option value="">Not sure</option>
+        ${Object.entries(BRACKETS).map(([n, label]) =>
+          `<option value="${n}">${n} — ${label}</option>`).join("")}
+      </select>
+    </label>
+    <p id="manual-error" class="field-note error" hidden></p>
+    <div class="manual-actions">
+      <button class="btn btn-primary" type="button" data-manual="1">Record a win</button>
+      <button class="btn btn-secondary" type="button" data-manual="0">Record a loss</button>
+    </div>`;
+}
+
+async function submitManualGame(won) {
+  const name = $("#manual-commander").value.trim();
+  const err = $("#manual-error");
+  err.hidden = true;
+  if (!name) {
+    err.textContent = "Name the commander you played.";
+    err.hidden = false;
+    return;
+  }
+  const bracketRaw = $("#manual-bracket").value;
+  try {
+    const res = await fetch("/api/history/manual", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        commander: name,
+        // The colour identity of a favourite we already know, so a manually
+        // added game lands in the same bucket as the played ones instead of
+        // creating a second, colourless row for the same deck.
+        identity: knownIdentityFor(name),
+        bracket: bracketRaw ? Number(bracketRaw) : null,
+        won,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    closeModal();
+    await loadRecords();
+  } catch (e) {
+    err.textContent = String(e.message || e);
+    err.hidden = false;
+  }
+}
+
+// A commander's colours, from whatever we already know — an existing record
+// first, then the favorites list.
+function knownIdentityFor(name) {
+  const key = name.toLowerCase();
+  const rec = records.find((r) => String(r.commander).toLowerCase() === key);
+  if (rec) return rec.identity || "";
+  const fav = favorites.find((f) => splitFavorite(f)[0].toLowerCase() === key);
+  return fav ? splitFavorite(fav)[1] : "";
 }
 
 function renderRecords() {
@@ -2519,6 +2712,38 @@ function openRecords() {
   renderRecords();
   loadRecords();
 }
+
+$("#records-list").addEventListener("click", (e) => {
+  const view = e.target.closest("[data-view]");
+  if (view) {
+    recordsView = view.dataset.view;
+    renderRecords();
+    return;
+  }
+  const hist = e.target.closest("[data-history]");
+  if (hist) return openHistory(hist.dataset.history);
+  if (e.target.closest('[data-records="add"]')) {
+    openModal("Add a game", addGameHtml());
+  }
+});
+
+modalBody.addEventListener("click", async (e) => {
+  const manual = e.target.closest("[data-manual]");
+  if (manual) return submitManualGame(manual.dataset.manual === "1");
+
+  const forget = e.target.closest("[data-forget]");
+  if (forget) {
+    const id = forget.dataset.forget;
+    forget.disabled = true;
+    await fetch(`/api/history/${encodeURIComponent(id)}`, {
+      method: "DELETE", credentials: "include",
+    }).catch(() => {});
+    forget.closest(".history-entry")?.remove();
+    // The totals on the screen behind are now wrong, so re-read rather than
+    // trying to decrement them here.
+    loadRecords();
+  }
+});
 
 // ---------- favorite commanders ----------
 function favoritesEditorHtml() {
@@ -2626,6 +2851,13 @@ function renderLoginButton() {
 }
 
 modalBody.addEventListener("click", async (e) => {
+  const win = e.target.closest("[data-win]");
+  if (win) {
+    sendMessage({ type: "claim_win", won: win.dataset.win === "1" });
+    closeModal();
+    return;
+  }
+
   const unfav = e.target.closest("[data-unfav]");
   if (unfav) {
     favorites = favorites.filter((f) => f !== unfav.dataset.unfav);

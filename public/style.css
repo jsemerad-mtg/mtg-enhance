@@ -1877,3 +1877,101 @@ body::before {
 @media (min-width: 560px) {
   .mode-row { grid-template-columns: repeat(4, 1fr); }
 }
+
+/* ---------- Records, history, manual entry ---------- */
+
+.seg {
+  display: flex;
+  gap: 0;
+  margin-bottom: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.seg-btn {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 6px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.seg-btn.is-on { background: var(--panel); color: var(--text); font-weight: 600; }
+
+/* A commander name that opens its history has to look pressable; the
+   colour-identity rows next to it don't open anything, and shouldn't. */
+.link-name {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.88rem;
+  color: var(--accent);
+  text-align: left;
+  cursor: pointer;
+}
+
+.add-game { width: 100%; margin-top: 14px; }
+
+.history-list, .seat-list { list-style: none; margin: 0; padding: 0; }
+
+.history-entry {
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+}
+.history-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  flex-wrap: wrap;
+}
+.history-head .field-note { margin: 0; }
+.history-del { margin-left: auto; font-size: 0.74rem; }
+
+.history-result {
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.history-result.is-win { color: var(--accent); }
+.history-result.is-loss { color: var(--text-muted); }
+
+.seat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+.seat-name { min-width: 0; flex: 0 0 auto; color: var(--text); }
+.seat-cmd { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The winner is marked, not just listed — reading a four-row table to work out
+   who won defeats the point of showing it. */
+.seat-won .seat-name { color: var(--accent); font-weight: 600; }
+.seat-won .seat-name::after { content: " ★"; }
+
+.manual-actions { display: flex; gap: 8px; }
+.manual-actions .btn { flex: 1; min-width: 0; }
+
+#manual-bracket {
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.95rem;
+  padding: 10px 12px;
+}
