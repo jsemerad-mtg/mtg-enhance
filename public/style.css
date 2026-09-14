@@ -1708,3 +1708,76 @@ body::before {
 }
 .legal-bar a { color: inherit; }
 .legal-bar .link-btn { font-size: 0.72rem; }
+
+/* ---------- Step train ---------- */
+/* Three steps today, more later — so it's built to wrap and shrink rather
+   than assuming it will always fit on one comfortable line. */
+.step-train {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0 0 18px;
+  flex-wrap: wrap;
+}
+
+.step {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  font: inherit;
+  font-size: 0.76rem;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.step-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 0.66rem;
+  line-height: 1;
+}
+
+/* Completed steps are buttons, so they need to look like they can be pressed —
+   a step you can return to that looks identical to one you can't is worse than
+   no affordance at all. */
+.step.is-done {
+  color: var(--accent);
+  border-color: var(--hairline);
+  cursor: pointer;
+}
+.step.is-done:hover { border-color: var(--accent); }
+
+.step.is-current {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.step.is-current .step-dot {
+  background: var(--accent);
+  color: #17120a;
+  border-color: var(--accent);
+}
+
+.step.is-todo { opacity: 0.45; }
+
+.step-line {
+  width: 14px;
+  height: 1px;
+  background: var(--hairline);
+  flex: 0 0 auto;
+}
+
+/* At phone width the labels are what has to give, not the layout. */
+@media (max-width: 359px) {
+  .step-label { display: none; }
+  .step { padding: 5px 7px; }
+}

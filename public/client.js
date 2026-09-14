@@ -5,11 +5,110 @@ const screens = {
   lobby: $("#screen-lobby"),
   game: $("#screen-game"),
 };
+// ---------- where you are, and how to get back ----------
+// Three steps today. The list is data rather than markup so that adding a step
+// later (deck import, table settings) is one entry, not a hunt through HTML.
+const STEPS = [
+  { id: "home", label: "Table" },
+  { id: "lobby", label: "Commander" },
+  { id: "game", label: "Game" },
+];
+
+let currentScreen = "home";
+
 function showScreen(name) {
   for (const key of Object.keys(screens)) screens[key].hidden = key !== name;
+  currentScreen = name;
+  renderSteps();
+  // Each screen is a history entry, so the phone's back gesture moves back a
+  // step instead of leaving the site. Without this, Android's back button
+  // drops you out of a game you're in the middle of — which reads as the app
+  // crashing, not as navigation.
+  const atTop = history.state?.screen === name;
+  if (!atTop) history.pushState({ screen: name }, "", location.pathname);
   // The wheel can only be positioned once its screen is actually rendered.
   if (name === "game" && typeof positionWheel === "function") positionWheel();
 }
+
+function renderSteps() {
+  const nav = $("#step-train");
+  if (!nav) return;
+  const at = STEPS.findIndex((s) => s.id === currentScreen);
+  nav.innerHTML = STEPS.map((step, i) => {
+    const state = i < at ? "done" : i === at ? "current" : "todo";
+    // Only completed steps are reachable. Jumping *forward* would skip the
+    // work each step exists to collect.
+    const tag = state === "done" ? "button" : "span";
+    const attrs =
+      state === "done"
+        ? ` type="button" data-step="${step.id}"`
+        : state === "current"
+          ? ' aria-current="step"'
+          : "";
+    return `<${tag} class="step is-${state}"${attrs}>
+      <span class="step-dot">${i + 1}</span><span class="step-label">${escapeHtml(step.label)}</span>
+    </${tag}>`;
+  }).join('<span class="step-line" aria-hidden="true"></span>');
+}
+
+// Going back from a game means leaving the table, so it asks first. Going back
+// from the lobby costs nothing — no seat has been taken yet.
+function goToStep(id) {
+  if (currentScreen === "game" && id !== "game") {
+    openModal(
+      "Leave the table?",
+      `<p>You'll drop out of this game. The others keep playing, and you can
+       rejoin with the same code.</p>
+       <button class="btn btn-primary" type="button" data-step-confirm="${escapeHtml(id)}">Leave</button>
+       <div class="auth-links">
+         <button class="link-btn" type="button" data-step-cancel="1">Stay</button>
+       </div>`
+    );
+    return;
+  }
+  showScreen(id);
+}
+
+// Deliberately sets leftGame BEFORE closing the socket. The close handler
+// schedules a reconnect, and without the flag the app would cheerfully put the
+// player straight back into the game they just chose to leave.
+function leaveTable() {
+  leftGame = true;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  try { ws?.close(); } catch {}
+  ws = null;
+  setConnection("offline");
+}
+
+document.addEventListener("click", (e) => {
+  const back = e.target.closest("[data-step]");
+  if (back) return goToStep(back.dataset.step);
+  const confirm = e.target.closest("[data-step-confirm]");
+  if (confirm) {
+    const to = confirm.dataset.stepConfirm;
+    closeModal();
+    leaveTable();
+    showScreen(to);
+    return;
+  }
+  if (e.target.closest("[data-step-cancel]")) closeModal();
+});
+
+// The browser's own back button, wired to the same rules — including the
+// confirmation, so a back gesture can't silently drop someone out of a game.
+window.addEventListener("popstate", (e) => {
+  const target = e.state?.screen || "home";
+  if (target === currentScreen) return;
+  if (currentScreen === "game" && target !== "game") {
+    // Put the entry back before asking: if they choose to stay, the history
+    // has to still reflect where they actually are.
+    history.pushState({ screen: "game" }, "", location.pathname);
+    goToStep(target);
+    return;
+  }
+  showScreen(target);
+});
 
 // ---------- placeholder audio (synthesized — no sound files yet) ----------
 let audioCtx = null;
@@ -2051,7 +2150,7 @@ function applySession(next) {
 
 function renderAccountUi() {
   renderLoginButton();
-  renderHomeFavorites();
+  renderFavorites();
   renderFavButton();
   renderSoundboard();
   // If a board or account modal is open, redraw it so an unlock lands without
@@ -2242,7 +2341,7 @@ function splitFavorite(entry) {
   return at === -1 ? [entry, ""] : [entry.slice(0, at), entry.slice(at + 1)];
 }
 
-function renderHomeFavorites() {
+function renderFavorites() {
   const host = $("#favorites-list");
   if (!host) return;
   if (!signedIn()) {
@@ -2292,7 +2391,7 @@ $("#btn-fav-commander").addEventListener("click", () => {
   favorites = favorites.includes(entry) ? favorites.filter((f) => f !== entry) : [...favorites, entry];
   writeJson(FAVORITES_KEY, favorites);
   renderFavButton();
-  renderHomeFavorites();
+  renderFavorites();
 });
 
 // ---------- auth actions ----------
@@ -2327,7 +2426,7 @@ modalBody.addEventListener("click", async (e) => {
   if (unfav) {
     favorites = favorites.filter((f) => f !== unfav.dataset.unfav);
     writeJson(FAVORITES_KEY, favorites);
-    renderHomeFavorites();
+    renderFavorites();
     return openAuth("account");
   }
 
@@ -2398,8 +2497,14 @@ modalBody.addEventListener("click", async (e) => {
 
 $("#btn-login").addEventListener("click", () => openAuth());
 renderLoginButton();
-renderHomeFavorites();
+renderFavorites();
 refreshSession();
+
+// The home screen starts visible rather than being switched to, so the train
+// would otherwise stay empty until the first navigation. Seeding the history
+// entry here also means the very first back gesture has somewhere to land.
+history.replaceState({ screen: "home" }, "", location.pathname);
+renderSteps();
 
 // ---------- join PIN ----------
 $("#input-pin-required").addEventListener("change", (e) => {

@@ -19,6 +19,9 @@
 <main id="app">
 
   <!-- HOME: host or join -->
+  <!-- Where you are, and how to get back. Rendered by renderSteps(). -->
+  <nav id="step-train" class="step-train" aria-label="Progress"></nav>
+
   <section id="screen-home" class="screen">
     <div class="top-bar">
       <button id="btn-login" class="btn-ghost" type="button">Log in</button>
@@ -74,11 +77,6 @@
     </div>
 
     <p id="home-error" class="error" hidden></p>
-
-    <section class="favorites">
-      <h2 class="section-heading">Favorites</h2>
-      <div id="favorites-list"></div>
-    </section>
 
     <footer class="legal-bar">
       <p>&copy; 2026 MTG Enhance. Card data via <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>.
@@ -160,6 +158,11 @@
       <p id="lobby-error" class="field-note error" hidden></p>
       <button type="submit" class="btn btn-primary">Sit down at the table</button>
     </form>
+
+    <section class="favorites">
+      <h2 class="section-heading">Favorites</h2>
+      <div id="favorites-list"></div>
+    </section>
   </section>
 
   <!-- GAME: life totals + soundboard -->
