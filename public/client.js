@@ -620,7 +620,33 @@ async function startChosenMode() {
       error.hidden = false;
       return;
     }
-    enterLobby(value);
+
+    // Ask about the table before moving to it. Two things come back: whether
+    // it exists at all, and whether it wants a PIN. Checking here rather than
+    // after the screen change means a typo'd code is caught while the code box
+    // is still in front of them, instead of dropping them into a lobby for a
+    // table that was never created.
+    const go = $("#btn-mode-go");
+    go.disabled = true;
+    go.textContent = "Checking…";
+    try {
+      const res = await fetch(`/api/session/${encodeURIComponent(value)}`);
+      const info = await res.json().catch(() => ({}));
+      if (!info.exists) {
+        error.textContent = `No table with the code ${value}. Check it with whoever is hosting.`;
+        error.hidden = false;
+        return;
+      }
+      // Carried through so the lobby doesn't have to ask a second time.
+      enterLobby(value, info);
+    } catch {
+      // The probe failed, not the join. Go anyway — the lobby asks again, and
+      // a missing or wrong PIN is still refused at sit-down.
+      enterLobby(value);
+    } finally {
+      go.disabled = false;
+      go.textContent = MODES.join.action;
+    }
     return;
   }
 
@@ -662,7 +688,7 @@ $("#input-code").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); startChosenMode(); }
 });
 
-function enterLobby(joinCode) {
+function enterLobby(joinCode, knownInfo = null) {
   pendingCode = joinCode;
   const stored = loadStored(joinCode);
 
@@ -678,18 +704,25 @@ function enterLobby(joinCode) {
   $("#lobby-error").hidden = true;
   showScreen("lobby");
 
-  // Ask the Worker whether this table wants a PIN, so the field appears
-  // before they fill anything in rather than after a rejected join.
+  // Whether this table wants a PIN, so the field appears before they fill
+  // anything in rather than after a rejected join. The join flow has usually
+  // asked already and passes the answer in; hosts and rejoins haven't, so it
+  // still falls back to asking.
   $("#join-pin-field").hidden = true;
-  fetch(`/api/session/${encodeURIComponent(joinCode)}`)
-    .then((r) => r.json())
-    .then((info) => {
-      $("#join-pin-field").hidden = !info.pinRequired;
-    })
-    .catch(() => {
-      // Offline or the probe failed — leave the field hidden; a wrong or
-      // missing PIN is still caught on join.
-    });
+  if (knownInfo) {
+    $("#join-pin-field").hidden = !knownInfo.pinRequired;
+    if (knownInfo.pinRequired) $("#input-join-pin").focus();
+  } else {
+    fetch(`/api/session/${encodeURIComponent(joinCode)}`)
+      .then((r) => r.json())
+      .then((info) => {
+        $("#join-pin-field").hidden = !info.pinRequired;
+      })
+      .catch(() => {
+        // Offline or the probe failed — leave the field hidden; a wrong or
+        // missing PIN is still caught on join.
+      });
+  }
 
   // A favorite tapped on the home screen fills the commander in for you.
   const preselect = readJson(PRESELECT_KEY, null);
