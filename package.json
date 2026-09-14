@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "build:commanders": "node scripts/build-commanders.js"
+    "build:commanders": "node scripts/build-commanders.js",
+    "test": "node tests/entitlements.test.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

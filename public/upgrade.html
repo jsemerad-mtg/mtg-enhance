@@ -28,24 +28,23 @@
       your three hotkey slots.</p>
 
       <ul class="upgrade-list">
-        <li>The complete sound library, not just the three defaults</li>
-        <li>Swap any sound into a hotkey slot</li>
-        <li>Save your favorite commanders across games</li>
-        <li>Custom sound packs and your own uploads, when they land</li>
+        <li><strong>5 palettes — $4.99.</strong> Unlock the sounds written for
+          five colour identities, one deck at a time. Buy it again when you
+          build more.</li>
+        <li><strong>Every palette — $14.99.</strong> All 32 identities, forever.</li>
       </ul>
 
-      <p class="field-note">Price and payment aren't set up yet. When they are,
-      this page becomes the Stripe Checkout hand-off.</p>
+      <p class="field-note">The universal table sounds — damage, draw, board
+      wipe, pass turn — are free for everyone and aren't part of this.</p>
+
+      <p class="field-note">Checkout isn't live yet. When it is, this page
+      becomes the Stripe hand-off and a completed purchase writes the
+      entitlement server-side.</p>
 
       <p id="upgrade-error" class="field-note error" hidden></p>
-
-      <button id="btn-buy" class="btn btn-primary upgrade-cta" type="button">
-        Simulate purchase (for testing)
-      </button>
     </div>
 
-    <div id="upgrade-done" hidden>
-      <p class="upgrade-lede">You're upgraded. The full board is unlocked in your game.</p>
+    <div id="upgrade-done">
       <button id="btn-return" class="btn btn-primary upgrade-cta" type="button">Back to your game</button>
     </div>
   </section>
@@ -53,33 +52,21 @@
 
 <script>
 // Opened in its own window so the game keeps its WebSocket and its place at
-// the table. Same origin, so writing the flag here fires a `storage` event in
-// the opener and the board unlocks without a reload — which is also how the
-// real Stripe return will behave.
-const ACCOUNT_KEY = "mtge:account";
-
-function readAccount() {
-  try { return JSON.parse(localStorage.getItem(ACCOUNT_KEY) || "null"); } catch { return null; }
-}
-
-document.getElementById("btn-buy").addEventListener("click", () => {
-  const account = readAccount();
-  const error = document.getElementById("upgrade-error");
-  if (!account) {
-    error.textContent = "Sign in on the main screen first, then come back here.";
-    error.hidden = false;
-    return;
-  }
-  try {
-    localStorage.setItem(ACCOUNT_KEY, JSON.stringify({ ...account, pro: true }));
-  } catch {
-    error.textContent = "Couldn't save that — your browser is blocking site storage.";
-    error.hidden = false;
-    return;
-  }
-  document.getElementById("upgrade-body").hidden = true;
-  document.getElementById("upgrade-done").hidden = false;
-});
+// the table.
+//
+// There is deliberately no "simulate purchase" button here any more. Palette
+// ownership lives in D1 and is read back over the shared session, so a flag
+// written in this browser would be a lie the app is right to ignore — and a
+// purchase that can be faked client-side is one that can be faked by a player.
+// To test the unlocked state, grant yourself a real pack row:
+//
+//   cd MTG-Oracle/worker
+//   npx wrangler d1 execute mtg_oracle_db --remote --command \
+//     "INSERT INTO entitlements (user_id, product, source) \
+//      SELECT id, 'enhance_pack', 'manual' FROM users WHERE email = 'you@example.com'"
+//
+// The app re-reads the session whenever this window's opener regains focus,
+// so closing this page is enough to pick up a change.
 
 document.getElementById("btn-return").addEventListener("click", () => {
   // A script-opened window can close itself; if this page was reached some

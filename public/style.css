@@ -1563,3 +1563,40 @@ body::before {
 @media (prefers-reduced-motion: reduce) {
   .color-toggle { transition: none; }
 }
+
+/* ---------- Palettes (the purchasable colour-identity sound sets) ---------- */
+
+/* A column, not the old label-plus-button row: the contents here are a
+   sentence, a list and a full-width button, and a flex row squeezed all three
+   into narrow columns that wrapped mid-word. */
+.palette-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+
+.palette-count {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.palette-more { align-self: stretch; }
+
+.price-list {
+  margin: 14px 0 16px;
+  padding-left: 20px;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+.price-list strong { color: var(--text); }
+
+/* Shown while the session check hasn't answered. Not a disabled state: the
+   button still works, it just doesn't claim to know whether you're signed in. */
+.btn-ghost.is-unsure { opacity: 0.75; }

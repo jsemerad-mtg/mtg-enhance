@@ -1353,36 +1353,56 @@ function soundBoardHtml() {
   const builtinRows = Object.entries(BUILTINS).map(([id, meta]) => soundRow(id, meta.label));
   sections.push(`<h3>Board</h3><ul class="sound-list">${builtinRows.join("")}</ul>`);
 
-  // Free accounts still see what's behind the upgrade — a locked list is a
-  // better pitch than a hidden one — but can't play or star any of it.
-  if (!isPro()) {
-    const locked = (rows) =>
-      `<ul class="sound-list locked">${rows
-        .map(([, label]) => `<li class="sound-row"><span class="sound-play is-locked">${escapeHtml(label)}</span>
-          <span class="sound-star is-locked">🔒</span></li>`)
-        .join("")}</ul>`;
-    return `<p class="board-hint">Your three hotkey sounds are below. The full board unlocks every
-      universal sound and every sound in your commander's colors.</p>
-      <button class="btn btn-primary upgrade-cta" type="button" data-auth="do-checkout">Upgrade for the full board</button>
-      ${sections.join("")}
-      <h3>Universal</h3>${locked(SOUND_LIBRARY.universal)}
-      ${myIdentityGroups()
-        .map((c) => `<h3>${COLOR_NAMES[c]}</h3>${locked(SOUND_LIBRARY[c] || [])}`)
-        .join("")}`;
+  // The universal table sounds — damage, draw, board wipe, pass turn — are
+  // free for everyone, signed in or not. They're what makes the app work at a
+  // table, and putting them behind a purchase would make the free tier a demo
+  // rather than a thing you'd actually use.
+  sections.push(
+    `<h3>Universal</h3><ul class="sound-list">${SOUND_LIBRARY.universal
+      .map(([id, l]) => soundRow(id, l))
+      .join("")}</ul>`
+  );
+
+  const key = myIdentityKey();
+  const groups = myIdentityGroups().filter((c) => (SOUND_LIBRARY[c] || []).length);
+
+  if (identityUnlocked(key)) {
+    for (const color of groups) {
+      sections.push(
+        `<h3>${COLOR_NAMES[color]}</h3><ul class="sound-list">${(SOUND_LIBRARY[color] || [])
+          .map(([id, l]) => soundRow(id, l))
+          .join("")}</ul>`
+      );
+    }
+    return `<p class="board-hint">Tap a name to play it. Star up to ${HOTKEY_SLOTS} to keep them on the main screen.</p>
+      <p id="board-warning" class="field-note error" hidden></p>${sections.join("")}`;
   }
 
-  sections.push(
-    `<h3>Universal</h3><ul class="sound-list">${SOUND_LIBRARY.universal.map(([id, l]) => soundRow(id, l)).join("")}</ul>`
-  );
-  for (const color of myIdentityGroups()) {
-    const rows = SOUND_LIBRARY[color] || [];
-    if (rows.length === 0) continue;
-    sections.push(
-      `<h3>${COLOR_NAMES[color]}</h3><ul class="sound-list">${rows.map(([id, l]) => soundRow(id, l)).join("")}</ul>`
-    );
+  // Locked palettes are shown, not hidden: a list you can read is a far better
+  // pitch than an absence, and it tells the player exactly what their deck
+  // would get. Nothing here is playable or starrable.
+  const locked = (rows) =>
+    `<ul class="sound-list locked">${rows
+      .map(([, label]) => `<li class="sound-row"><span class="sound-play is-locked">${escapeHtml(label)}</span>
+        <span class="sound-star is-locked">🔒</span></li>`)
+      .join("")}</ul>`;
+
+  // Three different asks, depending on what stands between them and the sounds.
+  let cta;
+  if (!signedIn()) {
+    cta = `<button class="btn btn-primary upgrade-cta" type="button" data-auth="do-signin">Sign in to unlock palettes</button>`;
+  } else if ((account?.slotsLeft || 0) > 0) {
+    cta = `<button class="btn btn-primary upgrade-cta" type="button" data-auth="view-unlock-${escapeHtml(key)}">
+      Unlock ${escapeHtml(paletteLabel(key))} — uses 1 of ${account.slotsLeft}</button>`;
+  } else {
+    cta = `<button class="btn btn-primary upgrade-cta" type="button" data-auth="view-upgrade">Get palette slots</button>`;
   }
-  return `<p class="board-hint">Tap a name to play it. Star up to ${HOTKEY_SLOTS} to keep them on the main screen.</p>
-    <p id="board-warning" class="field-note error" hidden></p>${sections.join("")}`;
+
+  return `<p class="board-hint">Every sound above is free. The ${escapeHtml(paletteLabel(key))}
+    sounds below are this deck's palette.</p>
+    ${cta}
+    ${sections.join("")}
+    ${groups.map((c) => `<h3>${COLOR_NAMES[c]}</h3>${locked(SOUND_LIBRARY[c] || [])}`).join("")}`;
 }
 
 function openSoundBoardModal() {
@@ -1638,20 +1658,27 @@ function showRejoinBanner() {
 }
 showRejoinBanner();
 
-// ---------- accounts (UI shell) ----------
-// There is no auth backend yet: D1 isn't created and no email provider is
-// chosen, so password reset can't actually send anything. These screens are
-// the real flows against a local stub.
+// ---------- accounts (the shared mtg-oracle.com session) ----------
+// MTG Enhance has no sign-in of its own, by design. Signing in happens once on
+// mtg-oracle.com, which issues an HMAC-signed cookie scoped to the parent
+// domain; this app only reads it. A second implementation of sign-in would be a
+// second thing to get wrong, and the wrong thing to get wrong.
 //
-// The one hard rule here: a password is never stored, anywhere. It's read for
-// validation, checked, and discarded — the "session" below holds a name, an
-// email and a paid flag and nothing else. A login form that looks real but
-// keeps credentials in localStorage is worse than no login form at all,
-// because a tester will type a password they use elsewhere.
-const ACCOUNT_KEY = "mtge:account";
+// Three states, not two. "unknown" is the one that earns its keep: a request
+// that never came back is NOT a signed-out player. On 2026-09-13 AdBlock Plus
+// returned a bare 403 for this app's session endpoint, which a two-state model
+// would have read as "signed out" — showing a paying customer an empty
+// soundboard with no error and no explanation. So a failed check leaves the
+// last known-good session in place and says so, and only an actual answer from
+// the server can sign someone out.
+const ORACLE_SITE = "https://mtg-oracle.com";
+const ORACLE_API = "https://api.mtg-oracle.com";
+// Not "/api/me": generic enough that filter lists match it. See the 403 above.
+const SESSION_URL = "/api/player-state";
+const UNLOCK_URL = "/api/unlock-identity";
+
 const FAVORITES_KEY = "mtge:favorites";
 const PRESELECT_KEY = "mtge:preselect";
-const MIN_PASSWORD = 8;
 
 function readJson(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; } catch { return fallback; }
@@ -1660,13 +1687,108 @@ function writeJson(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
-let account = readJson(ACCOUNT_KEY, null);
+let sessionState = "unknown";   // "unknown" | "out" | "in"
+let account = null;             // set only in the "in" state
 let favorites = readJson(FAVORITES_KEY, []);
 
-const isPro = () => account?.pro === true;
-const emailLooksValid = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+const signedIn = () => sessionState === "in";
 
-const PREVIEW_FLAG = `<p class="placeholder-flag">Preview — not connected yet</p>`;
+// The purchasable unit is a whole colour identity — one deck's worth — not a
+// single colour. "C" is colorless, which needs a name of its own to be a key.
+function identityKey(letters) {
+  return canonicalIdentity(letters) || "C";
+}
+
+function myIdentityKey() {
+  const self = session.players?.[selfId];
+  return identityKey((self?.colorIdentity || []).join(""));
+}
+
+function identityUnlocked(key = myIdentityKey()) {
+  if (!account) return false;
+  return account.all === true || (account.identities || []).includes(key);
+}
+
+function paletteLabel(key) {
+  if (key === "C") return "Colorless";
+  return key.split("").map((c) => COLOR_NAMES[c]).join(" · ");
+}
+
+// ---------- talking to the server about who you are ----------
+let sessionTimer = null;
+let sessionAttempt = 0;
+// Backs off rather than hammering: a blocked request will never succeed, and a
+// tab retrying every second forever is its own bug report.
+const RETRY_MS = [2000, 5000, 15000, 30000];
+
+function applySession(next) {
+  account = next;
+  sessionState = next ? "in" : "out";
+  sessionAttempt = 0;
+  renderAccountUi();
+}
+
+function renderAccountUi() {
+  renderLoginButton();
+  renderHomeFavorites();
+  renderFavButton();
+  renderSoundboard();
+  // If a board or account modal is open, redraw it so an unlock lands without
+  // the player having to close and reopen anything.
+  if (!modalBackdrop.hidden) {
+    if (modalBody.classList.contains("sound-board")) modalBody.innerHTML = soundBoardHtml();
+    else if (modalBody.classList.contains("auth-modal")) openAuth();
+  }
+}
+
+async function refreshSession() {
+  clearTimeout(sessionTimer);
+  try {
+    const res = await fetch(SESSION_URL, { credentials: "include", cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    applySession(data.signedIn ? data : null);
+  } catch (err) {
+    // Never downgrade a known-good session because one request failed.
+    if (sessionState !== "in") sessionState = "unknown";
+    renderAccountUi();
+    const delay = RETRY_MS[Math.min(sessionAttempt, RETRY_MS.length - 1)];
+    if (sessionAttempt < RETRY_MS.length) {
+      sessionAttempt += 1;
+      sessionTimer = setTimeout(refreshSession, delay);
+    }
+  }
+}
+
+// Covers both windows we open: signing in on Oracle and buying on the checkout
+// page. Coming back to this tab is the signal that something may have changed,
+// and it costs one small request.
+window.addEventListener("focus", () => {
+  if (document.visibilityState === "visible") refreshSession();
+});
+
+function openOracleSignIn() {
+  // A new window, not a redirect: a redirect mid-game drops the WebSocket and
+  // the player loses their seat at the table.
+  const win = window.open(ORACLE_SITE, "mtgo-signin", "width=520,height=760");
+  if (!win) location.href = ORACLE_SITE;
+}
+
+async function doLogout() {
+  try {
+    const res = await fetch(`${ORACLE_API}/api/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    applySession(null);
+    closeModal();
+  } catch {
+    // Clearing it locally would be a lie: the cookie is still live and the next
+    // reload would sign them straight back in.
+    authError("Couldn't reach the sign-out service. You're still signed in.");
+  }
+}
 
 function authError(message) {
   const el = $("#auth-error");
@@ -1675,114 +1797,100 @@ function authError(message) {
   el.hidden = !message;
 }
 
-function field(id, label, type = "text", extra = "") {
-  return `<label class="field">
-    <span>${escapeHtml(label)}</span>
-    <input id="${id}" type="${type}" autocomplete="off" ${extra} />
-  </label>`;
-}
-
+// ---------- account screens ----------
 const AUTH_VIEWS = {
+  unknown: () => ({
+    title: "Account",
+    body: `<p>Couldn't check your account just now, so nothing here is certain
+      yet — this isn't a sign-out.</p>
+      <p class="field-note">If you run an ad blocker, it may be blocking the
+      request. Allowing this site fixes it.</p>
+      <p id="auth-error" class="field-note error" hidden></p>
+      <button class="btn btn-primary" type="button" data-auth="do-retry">Try again</button>`,
+  }),
+
   signin: () => ({
     title: "Sign in",
-    body: `${PREVIEW_FLAG}
-      <div class="auth-form">
-        ${field("auth-identifier", "Username or email")}
-        ${field("auth-password", "Password", "password")}
+    body: `<p>One account covers MTG Oracle and MTG Enhance. Signing in happens
+      on MTG Oracle — come back to this tab afterwards and you'll be signed in
+      here too.</p>
+      <p class="field-note">You don't need an account to host or join a game.
+      It's for saving favorite commanders and for anything you've bought.</p>
+      <p id="auth-error" class="field-note error" hidden></p>
+      <button class="btn btn-primary" type="button" data-auth="do-signin">Sign in at MTG Oracle</button>`,
+  }),
+
+  account: () => {
+    const owned = account?.identities || [];
+    const palettes = account?.all
+      ? `<p class="palette-count">Every colour identity unlocked.</p>`
+      : `<p class="palette-count">${account?.slotsLeft || 0} palette ${
+          (account?.slotsLeft || 0) === 1 ? "slot" : "slots"
+        } left of ${account?.slotsTotal || 0}</p>
+        ${
+          owned.length
+            ? `<ul class="fav-list">${owned
+                .map((k) => `<li class="fav-row"><span class="fav-name">${escapeHtml(paletteLabel(k))}</span>${pipsHtml(k === "C" ? "" : k)}</li>`)
+                .join("")}</ul>`
+            : `<p class="empty-state">No palettes unlocked yet.</p>`
+        }
+        <button class="btn btn-primary btn-sm palette-more" type="button" data-auth="view-upgrade">Get more palettes</button>`;
+    return {
+      title: account?.name || "Your account",
+      body: `<p class="account-email">${escapeHtml(account?.email || "")}</p>
+        <div class="palette-panel">${palettes}</div>
+
+        <h3>Favorite commanders</h3>
+        ${favoritesEditorHtml()}
+
         <p id="auth-error" class="field-note error" hidden></p>
-        <button class="btn btn-primary" type="button" data-auth="do-signin">Sign in</button>
         <div class="auth-links">
-          <button class="link-btn" type="button" data-auth="view-forgot">Forgot username or password?</button>
-          <button class="link-btn" type="button" data-auth="view-signup">Create an account</button>
-        </div>
-      </div>`,
-  }),
-
-  signup: () => ({
-    title: "Create account",
-    body: `${PREVIEW_FLAG}
-      <div class="auth-form">
-        ${field("auth-name", "Name or username")}
-        ${field("auth-email", "Email address", "email")}
-        ${field("auth-password", "Password", "password")}
-        ${field("auth-confirm", "Confirm password", "password")}
-        <p class="field-note">At least ${MIN_PASSWORD} characters.</p>
-        <p id="auth-error" class="field-note error" hidden></p>
-        <button class="btn btn-primary" type="button" data-auth="do-signup">Create account</button>
-        <div class="auth-links">
-          <button class="link-btn" type="button" data-auth="view-signin">I already have an account</button>
-        </div>
-      </div>`,
-  }),
-
-  forgot: () => ({
-    title: "Reset your password",
-    body: `${PREVIEW_FLAG}
-      <div class="auth-form">
-        <p class="board-hint">Enter the email on the account and we'll send a six-digit reset code.</p>
-        ${field("auth-email", "Email address", "email")}
-        <p id="auth-error" class="field-note error" hidden></p>
-        <button class="btn btn-primary" type="button" data-auth="do-forgot">Send reset code</button>
-        <div class="auth-links">
-          <button class="link-btn" type="button" data-auth="view-signin">Back to sign in</button>
-        </div>
-      </div>`,
-  }),
-
-  reset: (email) => ({
-    title: "Enter your code",
-    body: `${PREVIEW_FLAG}
-      <div class="auth-form">
-        <p class="board-hint">A six-digit code would be sent to ${escapeHtml(email || "your email")}.
-        Nothing is actually sent yet — no email provider is wired up.</p>
-        ${field("auth-code", "Six-digit code", "text", 'inputmode="numeric" maxlength="6"')}
-        ${field("auth-password", "New password", "password")}
-        ${field("auth-confirm", "Confirm new password", "password")}
-        <p id="auth-error" class="field-note error" hidden></p>
-        <button class="btn btn-primary" type="button" data-auth="do-reset">Set new password</button>
-        <div class="auth-links">
-          <button class="link-btn" type="button" data-auth="view-forgot">Send another code</button>
-        </div>
-      </div>`,
-  }),
-
-  account: () => ({
-    title: account?.name || "Your account",
-    body: `${PREVIEW_FLAG}
-      <p class="account-email">${escapeHtml(account?.email || "")}</p>
-      <div class="account-plan">
-        <span class="plan-label">${isPro() ? "Full soundboard" : "Free — 3 sounds"}</span>
-        ${isPro() ? "" : `<button class="btn btn-primary btn-sm" type="button" data-auth="view-upgrade">Upgrade</button>`}
-      </div>
-
-      <h3>Favorite commanders</h3>
-      ${favoritesEditorHtml()}
-
-      <div class="auth-links">
-        <button class="link-btn" type="button" data-auth="do-logout">Log out</button>
-      </div>`,
-  }),
+          <button class="link-btn" type="button" data-auth="do-logout">Log out</button>
+        </div>`,
+    };
+  },
 
   upgrade: () => ({
-    title: "Upgrade",
-    body: `${PREVIEW_FLAG}
-      <p>The full soundboard unlocks every universal sound plus every sound in
-      your commander's color identity, lets you star any of them into your
-      three hotkey slots, and saves your favorite commanders.</p>
-      <p>Custom sound packs and uploading your own sounds are planned on top of
-      this.</p>
-      <p class="field-note">Price and checkout aren't set up yet.</p>
+    title: "Palettes",
+    body: `<p>Every table sound — damage, draw, board wipe, pass turn — is free
+      and always will be. Palettes are the sounds written for one deck's colour
+      identity, and you unlock them a deck at a time.</p>
+      <ul class="price-list">
+        <li><strong>5 palettes — $4.99.</strong> Enough for five decks. Buy it
+          again whenever you build more.</li>
+        <li><strong>Every palette — $14.99.</strong> All 32 identities, forever.</li>
+      </ul>
+      <p class="field-note">Checkout isn't live yet.</p>
       <button class="btn btn-primary upgrade-cta" type="button" data-auth="do-checkout">Open checkout</button>
       <div class="auth-links">
-        <button class="link-btn" type="button" data-auth="do-simulate-upgrade">
-          ${isPro() ? "Turn off" : "Turn on"} upgraded state (without checkout)
-        </button>
         <button class="link-btn" type="button" data-auth="view-account">Back</button>
+      </div>`,
+  }),
+
+  // Spending a slot is permanent, so it gets a real confirmation naming both
+  // what they're buying into and what it costs them. Without this, one game
+  // with a borrowed deck silently burns a slot.
+  unlock: (key) => ({
+    title: `Unlock ${paletteLabel(key)}?`,
+    body: `<p>This uses <strong>1 of your ${account?.slotsLeft || 0}</strong>
+      remaining palette slots. The ${escapeHtml(paletteLabel(key))} palette is
+      then yours permanently, on every device.</p>
+      <p class="field-note">Playing a one-off deck? Skip it — the universal
+      table sounds work for any commander.</p>
+      <p id="auth-error" class="field-note error" hidden></p>
+      <button class="btn btn-primary" type="button" data-unlock="${escapeHtml(key)}">Use a slot</button>
+      <div class="auth-links">
+        <button class="link-btn" type="button" data-auth="do-close">Not now</button>
       </div>`,
   }),
 };
 
-function openAuth(view = account ? "account" : "signin", arg) {
+function defaultAuthView() {
+  if (sessionState === "unknown") return "unknown";
+  return signedIn() ? "account" : "signin";
+}
+
+function openAuth(view = defaultAuthView(), arg) {
   const { title, body } = AUTH_VIEWS[view](arg);
   openModal(title, body);
   modalBody.classList.add("auth-modal");
@@ -1790,8 +1898,8 @@ function openAuth(view = account ? "account" : "signin", arg) {
 
 // ---------- favorite commanders ----------
 function favoritesEditorHtml() {
-  if (!isPro()) {
-    return `<p class="empty-state">Saving favorite commanders comes with the full soundboard.</p>`;
+  if (!signedIn()) {
+    return `<p class="empty-state">Sign in to save the commanders you play most.</p>`;
   }
   if (favorites.length === 0) {
     return `<p class="empty-state">Star a commander in the lobby and it'll appear here.</p>`;
@@ -1816,12 +1924,8 @@ function splitFavorite(entry) {
 function renderHomeFavorites() {
   const host = $("#favorites-list");
   if (!host) return;
-  if (!account) {
+  if (!signedIn()) {
     host.innerHTML = `<p class="empty-state">Sign in to save the commanders you play most.</p>`;
-    return;
-  }
-  if (!isPro()) {
-    host.innerHTML = `<p class="empty-state">Favorite commanders come with the full soundboard.</p>`;
     return;
   }
   if (favorites.length === 0) {
@@ -1854,7 +1958,7 @@ function renderFavButton() {
   const btn = $("#btn-fav-commander");
   if (!btn) return;
   const resolved = expectedCommanderName && expectedIdentity !== null;
-  btn.hidden = !(resolved && isPro());
+  btn.hidden = !(resolved && signedIn());
   if (btn.hidden) return;
   const entry = `${expectedCommanderName}|${expectedIdentity}`;
   btn.textContent = favorites.includes(entry) ? "★ Saved to favorites" : "☆ Save to favorites";
@@ -1871,20 +1975,9 @@ $("#btn-fav-commander").addEventListener("click", () => {
 });
 
 // ---------- auth actions ----------
-let resetEmail = "";
-
-function setAccount(next) {
-  account = next;
-  writeJson(ACCOUNT_KEY, account);
-  renderLoginButton();
-  renderHomeFavorites();
-  renderFavButton();
-  renderSoundboard();
-}
-
-// Checkout gets its own window so the game keeps its socket and its seat at
-// the table. The upgrade page writes the flag on the same origin, which fires
-// a storage event back here — the same shape the real Stripe return will take.
+// Checkout gets its own window so the game keeps its socket and its seat at the
+// table. On return, the focus handler re-reads the session — entitlements live
+// in D1 now, so there is nothing local to update and nothing local to fake.
 function openCheckout() {
   const win = window.open("/upgrade.html", "mtge-upgrade", "width=460,height=720");
   if (!win) {
@@ -1894,26 +1987,21 @@ function openCheckout() {
   }
 }
 
-window.addEventListener("storage", (e) => {
-  if (e.key !== ACCOUNT_KEY) return;
-  account = readJson(ACCOUNT_KEY, null);
-  renderLoginButton();
-  renderHomeFavorites();
-  renderFavButton();
-  renderSoundboard();
-  // If the sound board is open, redraw it so the unlock is immediate.
-  if (modalBody.classList.contains("sound-board") && !modalBackdrop.hidden) {
-    modalBody.innerHTML = soundBoardHtml();
-  }
-});
-
 function renderLoginButton() {
   const btn = $("#btn-login");
   if (!btn) return;
-  btn.textContent = account ? account.name : "Log in";
+  if (sessionState === "unknown") {
+    // Deliberately not "Log in": we don't know that they aren't, and offering
+    // a sign-in to someone already signed in is how you get a support email.
+    btn.textContent = "Account";
+    btn.classList.add("is-unsure");
+    return;
+  }
+  btn.classList.remove("is-unsure");
+  btn.textContent = signedIn() ? account.name : "Log in";
 }
 
-modalBody.addEventListener("click", (e) => {
+modalBody.addEventListener("click", async (e) => {
   const unfav = e.target.closest("[data-unfav]");
   if (unfav) {
     favorites = favorites.filter((f) => f !== unfav.dataset.unfav);
@@ -1922,55 +2010,51 @@ modalBody.addEventListener("click", (e) => {
     return openAuth("account");
   }
 
+  // Spending a palette slot. The button is only reachable from the confirm
+  // screen, and the server re-checks everything anyway — this is the courtesy
+  // layer, not the control.
+  const unlock = e.target.closest("[data-unlock]");
+  if (unlock) {
+    const key = unlock.dataset.unlock;
+    unlock.disabled = true;
+    unlock.textContent = "Unlocking…";
+    try {
+      const res = await fetch(UNLOCK_URL, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identity: key }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      // Take the server's word for the new state rather than decrementing a
+      // local counter, which would drift the moment two devices are open.
+      applySession({ ...account, ...data });
+      return openSoundBoardModal();
+    } catch (err) {
+      unlock.disabled = false;
+      unlock.textContent = "Use a slot";
+      return authError(String(err.message || err));
+    }
+  }
+
   const action = e.target.closest("[data-auth]")?.dataset.auth;
   if (!action) return;
 
-  if (action.startsWith("view-")) return openAuth(action.slice(5), resetEmail);
+  // "view-unlock-WUBG" carries its identity in the attribute, so the confirm
+  // screen can name the exact palette without reaching back into game state.
+  if (action.startsWith("view-unlock-")) return openAuth("unlock", action.slice("view-unlock-".length));
+  if (action.startsWith("view-")) return openAuth(action.slice(5));
+
+  if (action === "do-retry") {
+    authError("");
+    await refreshSession();
+    return openAuth();
+  }
 
   if (action === "do-signin") {
-    const identifier = $("#auth-identifier").value.trim();
-    const password = $("#auth-password").value;
-    if (!identifier) return authError("Enter your username or email.");
-    if (!password) return authError("Enter your password.");
-    // Shape checked, password dropped on the floor — nothing to verify it
-    // against until there's a backend, and nowhere safe to keep it.
-    $("#auth-password").value = "";
-    setAccount({ name: identifier.split("@")[0], email: identifier.includes("@") ? identifier : "", pro: false });
-    return openAuth("account");
-  }
-
-  if (action === "do-signup") {
-    const name = $("#auth-name").value.trim();
-    const email = $("#auth-email").value.trim();
-    const password = $("#auth-password").value;
-    const confirm = $("#auth-confirm").value;
-    if (name.length < 2) return authError("Pick a name of at least two characters.");
-    if (!emailLooksValid(email)) return authError("That doesn't look like an email address.");
-    if (password.length < MIN_PASSWORD) return authError(`Passwords need at least ${MIN_PASSWORD} characters.`);
-    if (password !== confirm) return authError("The two passwords don't match.");
-    $("#auth-password").value = "";
-    $("#auth-confirm").value = "";
-    setAccount({ name, email, pro: false });
-    return openAuth("account");
-  }
-
-  if (action === "do-forgot") {
-    const email = $("#auth-email").value.trim();
-    if (!emailLooksValid(email)) return authError("Enter the email address on the account.");
-    resetEmail = email;
-    return openAuth("reset", email);
-  }
-
-  if (action === "do-reset") {
-    const code = $("#auth-code").value.trim();
-    const password = $("#auth-password").value;
-    const confirm = $("#auth-confirm").value;
-    if (!/^\d{6}$/.test(code)) return authError("The code is six digits.");
-    if (password.length < MIN_PASSWORD) return authError(`Passwords need at least ${MIN_PASSWORD} characters.`);
-    if (password !== confirm) return authError("The two passwords don't match.");
-    $("#auth-password").value = "";
-    $("#auth-confirm").value = "";
-    return openAuth("signin");
+    openOracleSignIn();
+    return closeModal();
   }
 
   if (action === "do-checkout") {
@@ -1978,21 +2062,15 @@ modalBody.addEventListener("click", (e) => {
     return closeModal();
   }
 
-  if (action === "do-logout") {
-    setAccount(null);
-    return closeModal();
-  }
+  if (action === "do-logout") return doLogout();
 
-  if (action === "do-simulate-upgrade") {
-    setAccount({ ...account, pro: !isPro() });
-    return openAuth("upgrade");
-  }
-
+  if (action === "do-close") return closeModal();
 });
 
 $("#btn-login").addEventListener("click", () => openAuth());
 renderLoginButton();
 renderHomeFavorites();
+refreshSession();
 
 // ---------- join PIN ----------
 $("#input-pin-required").addEventListener("change", (e) => {

@@ -1,5 +1,5 @@
 import { GameSession } from "./game-session.js";
-import { currentUser } from "./shared-session.js";
+import { currentUser, unlockIdentity } from "./shared-session.js";
 export { GameSession };
 
 // Excludes visually ambiguous characters: 0/O, 1/I/L.
@@ -79,6 +79,22 @@ export default {
     if (url.pathname === "/api/player-state" || url.pathname === "/api/me") {
       const me = await currentUser(request, env);
       return Response.json(me, {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+
+    // Spend one palette slot. POST { identity: "WUBG" }.
+    //
+    // The client asks for confirmation first, but nothing here trusts that:
+    // the slot count, the ownership check and the write all happen in
+    // unlockIdentity() against the database. The response carries the fresh
+    // entitlement state so the caller replaces its copy rather than
+    // incrementing a local counter that could drift.
+    if (url.pathname === "/api/unlock-identity" && request.method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const result = await unlockIdentity(request, env, body.identity);
+      return Response.json(result, {
+        status: result.ok ? 200 : result.signedIn === false ? 401 : 400,
         headers: { "Cache-Control": "no-store" },
       });
     }
