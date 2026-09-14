@@ -1690,3 +1690,21 @@ body::before {
   #btn-oracle.has-news { animation: none; box-shadow: 0 0 10px 2px rgba(217, 183, 92, 0.5); }
   .mic-btn.listening { animation: none; }
 }
+
+/* ---------- Legal footer ---------- */
+/* Home screen only. The game screen has to fit a phone without scrolling, and
+   small print is not worth a scrollbar mid-turn. */
+.legal-bar {
+  margin-top: 28px;
+  padding-top: 16px;
+  border-top: 1px solid var(--hairline);
+  text-align: center;
+}
+.legal-bar p {
+  margin: 0 0 6px;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+.legal-bar a { color: inherit; }
+.legal-bar .link-btn { font-size: 0.72rem; }

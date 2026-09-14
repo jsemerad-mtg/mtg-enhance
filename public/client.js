@@ -1273,6 +1273,61 @@ function startDictation(targetId, btn) {
   recognition.start();
 }
 
+// ---------- what this app collects ----------
+// Written from what the code actually does, not copied from MTG Oracle's
+// policy — the two apps collect different things, and a policy that describes
+// the wrong app is worse than none. Points worth keeping accurate as the app
+// changes: Enhance has no analytics of its own, the game lives in the Durable
+// Object and is gone when the table breaks up, and a rules question DOES leave
+// this app — it goes to MTG Oracle, which logs queries.
+const LEGAL_HTML = `
+  <p class="field-note">Last updated 14 September 2026.</p>
+
+  <h3>The game itself</h3>
+  <p>Your display name, commander, life total and counters live in the table's
+  session while the game is running, and are gone once everyone leaves. Nothing
+  about a game is kept afterwards.</p>
+
+  <h3>Your browser</h3>
+  <p>Your hotkey choices, mute setting, favorite commanders and the code of the
+  table you were last in are stored on this device only. Clearing site data
+  removes them. Nothing in there is sent to us.</p>
+
+  <h3>If you sign in</h3>
+  <p>Signing in happens on MTG Oracle, and this app reads the same account:
+  your email address, your display name and what you've purchased. There is no
+  password in this app and no sign-in of its own.</p>
+
+  <h3>Cards</h3>
+  <p>Card names and images come from
+  <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>,
+  fetched by your browser as you type or look a card up. Those requests go to
+  Scryfall directly and are subject to their privacy policy.</p>
+
+  <h3>Rules questions</h3>
+  <p>A rules question leaves this app. It is sent to MTG Oracle, answered using
+  Anthropic's Claude, and logged there along with the answer for debugging and
+  abuse prevention. The question and the answer are also shown to everyone at
+  your table &mdash; that's the point of the feature, but it's worth knowing
+  before you type something you'd rather keep to yourself.</p>
+
+  <h3>Dictation</h3>
+  <p>The microphone button uses your browser's own speech recognition. Some
+  browsers &mdash; Chrome among them &mdash; do this by sending the audio to
+  the browser maker's servers. We never receive the audio, but we also can't
+  control what your browser does with it.</p>
+
+  <h3>What we don't do</h3>
+  <p>No analytics, no advertising, no tracking cookies, no selling anything to
+  anyone. The only cookie is the sign-in session shared with MTG Oracle.</p>
+
+  <p class="field-note">Questions, or want data associated with your account
+  removed? Contact us through
+  <a href="https://mtg-oracle.com" target="_blank" rel="noopener">mtg-oracle.com</a>.</p>
+`;
+
+$("#btn-legal").addEventListener("click", () => openModal("What this app collects", LEGAL_HTML));
+
 $("#btn-help").addEventListener("click", () => openModal("How this works", HELP_HTML));
 $("#btn-oracle").addEventListener("click", openOracle);
 
