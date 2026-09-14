@@ -42,26 +42,31 @@
     </div>
 
     <div class="stack">
-      <label class="pin-toggle">
-        <input id="input-pin-required" type="checkbox" />
-        <span>Require a PIN to join</span>
-      </label>
-      <input id="input-host-pin" class="code-input pin-input" type="text" inputmode="numeric"
-             maxlength="4" placeholder="PIN" autocomplete="off" hidden />
+      <!-- Three equal choices, none preselected. Picking one is a separate act
+           from committing to it, so nobody creates a remote game by tapping
+           what they assumed was a heading. -->
+      <div class="mode-row" role="radiogroup" aria-label="How do you want to start?">
+        <button type="button" class="mode-btn" data-pick="colocated" role="radio" aria-checked="false">
+          <span class="mode-btn-title">Host Local Game</span>
+        </button>
+        <button type="button" class="mode-btn" data-pick="remote" role="radio" aria-checked="false">
+          <span class="mode-btn-title">Host Remote Game</span>
+        </button>
+        <button type="button" class="mode-btn" data-pick="join" role="radio" aria-checked="false">
+          <span class="mode-btn-title">Join a Game</span>
+        </button>
+      </div>
 
-      <button id="btn-host-local" class="btn btn-primary btn-mode" data-mode="colocated">
-        <span class="btn-mode-title">Host a local game</span>
-        <span class="btn-mode-sub">Everyone's at one table — music and board wipes play on your device only</span>
-      </button>
+      <div id="mode-detail" class="mode-detail" hidden>
+        <p id="mode-prompt" class="mode-prompt"></p>
 
-      <button id="btn-host-remote" class="btn btn-secondary btn-mode" data-mode="remote">
-        <span class="btn-mode-title">Host a remote game</span>
-        <span class="btn-mode-sub">Everyone's on their own screen — music and board wipes play for all players</span>
-      </button>
+        <label class="pin-toggle" id="pin-toggle-row" hidden>
+          <input id="input-pin-required" type="checkbox" />
+          <span>Require a PIN to join</span>
+        </label>
+        <input id="input-host-pin" class="code-input pin-input" type="text" inputmode="numeric"
+               maxlength="4" placeholder="PIN" autocomplete="off" hidden />
 
-      <div class="divider">or</div>
-
-      <form id="form-join" class="join-form">
         <input
           id="input-code"
           class="code-input"
@@ -71,9 +76,11 @@
           placeholder="CODE"
           autocomplete="off"
           autocapitalize="characters"
+          hidden
         />
-        <button type="submit" class="btn btn-secondary">Join a game</button>
-      </form>
+
+        <button id="btn-mode-go" class="btn btn-primary" type="button"></button>
+      </div>
     </div>
 
     <p id="home-error" class="error" hidden></p>

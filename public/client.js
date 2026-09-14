@@ -554,48 +554,112 @@ function hostPin() {
   return /^\d{4}$/.test(value) ? value : null;
 }
 
-document.querySelectorAll(".btn-mode").forEach((btn) => {
-  btn.addEventListener("click", async () => {
+// ---------- choosing how to start ----------
+// The three buttons choose; the one below commits. Separating those matters
+// because two of the three create something real on the server, and the old
+// layout invited a tap on what looked like a description.
+const MODES = {
+  colocated: {
+    action: "Create game",
+    prompt: "This will create a local game where we assume everyone is at the same table — proceed?",
+  },
+  remote: {
+    action: "Create game",
+    prompt: "This will create a game where one or more players are joining remotely — proceed?",
+  },
+  join: {
+    // Not "Continue": at the moment of pressing it, "Join game" says what is
+    // about to happen and "Continue" doesn't.
+    action: "Join game",
+    prompt: "Enter your 4-character game code to join an existing game:",
+  },
+};
+
+let chosenMode = null;
+
+function chooseMode(mode) {
+  chosenMode = mode;
+  $("#home-error").hidden = true;
+
+  for (const btn of document.querySelectorAll("[data-pick]")) {
+    const on = btn.dataset.pick === mode;
+    btn.classList.toggle("is-chosen", on);
+    btn.setAttribute("aria-checked", on ? "true" : "false");
+  }
+
+  const detail = $("#mode-detail");
+  const joining = mode === "join";
+  detail.hidden = false;
+  $("#mode-prompt").textContent = MODES[mode].prompt;
+  $("#btn-mode-go").textContent = MODES[mode].action;
+
+  // A PIN is something a host sets, so it only exists in the two host modes.
+  $("#pin-toggle-row").hidden = joining;
+  $("#input-host-pin").hidden = joining || !$("#input-pin-required").checked;
+  $("#input-code").hidden = !joining;
+  if (joining) $("#input-code").focus();
+}
+
+document.querySelectorAll("[data-pick]").forEach((btn) => {
+  btn.addEventListener("click", () => {
     ensureAudio();
-    $("#home-error").hidden = true;
-    if ($("#input-pin-required").checked && !hostPin()) {
-      $("#home-error").textContent = "Enter a 4-digit PIN, or switch the PIN off.";
-      $("#home-error").hidden = false;
-      return;
-    }
-    btn.disabled = true;
-    try {
-      const res = await fetch("/api/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: btn.dataset.mode, pin: hostPin() }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Could not create a game");
-      const pin = hostPin();
-      enterLobby(data.code);
-      // The host just chose this PIN; making them retype it to sit down at
-      // their own table is pure friction.
-      if (pin) $("#input-join-pin").value = pin;
-    } catch (err) {
-      $("#home-error").textContent = err.message;
-      $("#home-error").hidden = false;
-    } finally {
-      btn.disabled = false;
-    }
+    chooseMode(btn.dataset.pick);
   });
 });
 
-$("#form-join").addEventListener("submit", (e) => {
-  e.preventDefault();
+async function startChosenMode() {
+  if (!chosenMode) return;
   ensureAudio();
-  const value = $("#input-code").value.trim().toUpperCase();
-  if (value.length !== 4) {
-    $("#home-error").textContent = "Enter the 4-character table code.";
-    $("#home-error").hidden = false;
+  const error = $("#home-error");
+  error.hidden = true;
+
+  if (chosenMode === "join") {
+    const value = $("#input-code").value.trim().toUpperCase();
+    if (value.length !== 4) {
+      error.textContent = "Enter the 4-character table code.";
+      error.hidden = false;
+      return;
+    }
+    enterLobby(value);
     return;
   }
-  enterLobby(value);
+
+  if ($("#input-pin-required").checked && !hostPin()) {
+    error.textContent = "Enter a 4-digit PIN, or switch the PIN off.";
+    error.hidden = false;
+    return;
+  }
+
+  const go = $("#btn-mode-go");
+  go.disabled = true;
+  try {
+    const res = await fetch("/api/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: chosenMode, pin: hostPin() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Could not create a game");
+    const pin = hostPin();
+    enterLobby(data.code);
+    // The host just chose this PIN; making them retype it to sit down at
+    // their own table is pure friction.
+    if (pin) $("#input-join-pin").value = pin;
+  } catch (err) {
+    error.textContent = err.message;
+    error.hidden = false;
+  } finally {
+    go.disabled = false;
+  }
+}
+
+$("#btn-mode-go").addEventListener("click", startChosenMode);
+
+// Typing a code and pressing Enter should start the game, the way it did when
+// this was a form. It stopped being a form so that one button could serve all
+// three modes, but the keyboard behaviour shouldn't regress with it.
+$("#input-code").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); startChosenMode(); }
 });
 
 function enterLobby(joinCode) {
