@@ -1975,3 +1975,40 @@ body::before {
   font-size: 0.95rem;
   padding: 10px 12px;
 }
+
+/* ---------- Bracket ---------- */
+.bracket-field { border: none; padding: 0; margin: 0; }
+
+.bracket-row {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.bracket-btn {
+  /* Grid children refuse to shrink below their content without this; six
+     cells on a 390px screen is tight enough that it matters. */
+  min-width: 0;
+  padding: 10px 0;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.bracket-btn:hover { border-color: var(--accent); }
+
+/* Same gold as every other "this is selected" in the app. */
+.bracket-btn.is-chosen {
+  background: linear-gradient(180deg, #f3dc9a 0%, #d9b75c 55%, #b9923c 100%);
+  border-color: #8a6a24;
+  color: #17120a;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 2px 0 #6f5320;
+}
+
+#btn-sit-down:disabled { opacity: 0.5; cursor: not-allowed; }
+#sit-hint { margin-top: 6px; text-align: center; }

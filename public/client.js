@@ -393,6 +393,10 @@ function connectAndJoin(joinCode, lobbyInfo) {
         displayName: lobbyInfo.displayName ?? stored.displayName,
         commanderName: lobbyInfo.commanderName ?? stored.commanderName,
         colorIdentity: lobbyInfo.colorIdentity ?? stored.colorIdentity,
+        // ?? not ||, deliberately: a bracket of null means "didn't say", and
+        // || would silently swap that for the stored value from a previous
+        // game with a different deck.
+        bracket: lobbyInfo.bracket ?? stored.bracket ?? null,
         pin: lobbyInfo.pin ?? null,
       })
     );
@@ -768,6 +772,53 @@ function enterLobby(joinCode, knownInfo = null) {
   }
 }
 
+// ---------- bracket ----------
+// Two pieces of state, not one. "Haven't answered" and "answered: don't know"
+// look the same if you only store a number — and they are completely
+// different: the first should block sitting down, the second shouldn't.
+let bracketAnswered = false;
+let bracketValue = null;   // 1-5, or null for "??"
+
+function setBracket(raw) {
+  bracketAnswered = true;
+  bracketValue = raw === "?" ? null : Number(raw);
+  for (const btn of document.querySelectorAll("[data-bracket]")) {
+    const on = btn.dataset.bracket === raw;
+    btn.classList.toggle("is-chosen", on);
+    btn.setAttribute("aria-checked", on ? "true" : "false");
+  }
+  $("#bracket-note").textContent = bracketValue
+    ? `Bracket ${bracketValue} — ${BRACKETS[bracketValue]}.`
+    : "No bracket recorded for this game.";
+  updateSitButton();
+}
+
+// The button says what's missing rather than sitting there greyed out with no
+// explanation — a disabled control with no reason is the most common way an
+// app looks broken when it's working correctly.
+function updateSitButton() {
+  const btn = $("#btn-sit-down");
+  const hint = $("#sit-hint");
+  if (!btn) return;
+  const name = $("#input-name").value.trim();
+  const commander = $("#input-commander").value.trim();
+  const missing = [];
+  if (!name) missing.push("your name");
+  if (!commander) missing.push("a commander");
+  if (!bracketAnswered) missing.push("a bracket");
+  btn.disabled = missing.length > 0;
+  hint.textContent = missing.length
+    ? `Still need ${missing.length === 1 ? missing[0] : missing.slice(0, -1).join(", ") + " and " + missing.at(-1)}.`
+    : "";
+  hint.hidden = missing.length === 0;
+}
+
+document.querySelectorAll("[data-bracket]").forEach((btn) => {
+  btn.addEventListener("click", () => setBracket(btn.dataset.bracket));
+});
+$("#input-name").addEventListener("input", updateSitButton);
+$("#input-commander").addEventListener("input", updateSitButton);
+
 $("#form-lobby").addEventListener("submit", (e) => {
   e.preventDefault();
   const displayName = $("#input-name").value.trim();
@@ -782,7 +833,23 @@ $("#form-lobby").addEventListener("submit", (e) => {
   }
   $("#lobby-error").hidden = true;
   showScreen("game");
-  connectAndJoin(pendingCode, { displayName, commanderName, colorIdentity, pin });
+  connectAndJoin(pendingCode, { displayName, commanderName, colorIdentity, pin, bracket: bracketValue });
+
+  // Remember the deck for next time. Fire-and-forget on purpose: this is a
+  // convenience, and nobody should be kept out of a game because a deck row
+  // didn't save.
+  if (signedIn() && commanderName) {
+    fetch("/api/decks", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        commander: commanderName,
+        identity: canonicalIdentity(colorIdentity.join("")),
+        bracket: bracketValue,
+      }),
+    }).catch(() => {});
+  }
 });
 
 // Life total controls

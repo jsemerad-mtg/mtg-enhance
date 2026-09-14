@@ -35,6 +35,13 @@ function checkCooldown(state, soundId, key) {
   return { ok: true };
 }
 
+// Anything that isn't 1-5 becomes null rather than being stored as-is: the
+// column feeds a stat, and a bracket of 0 or 99 is noise, not data.
+function validBracket(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : null;
+}
+
 function initialState(sessionId, mode = "colocated", pin = null) {
   return {
     sessionId,
@@ -150,6 +157,7 @@ export class GameSession extends DurableObject {
       if (typeof player.lethalAnnounced !== "boolean") player.lethalAnnounced = false;
       if (typeof player.eliminated !== "boolean") player.eliminated = false;
       if (typeof player.commanderCasts !== "number") player.commanderCasts = 0;
+      if (player.bracket === undefined) player.bracket = null;
     }
   }
 
@@ -493,6 +501,7 @@ export class GameSession extends DurableObject {
           if (msg.displayName) existing.displayName = msg.displayName.slice(0, 20);
           if (msg.commanderName !== undefined) existing.commanderName = msg.commanderName.slice(0, 40);
           if (Array.isArray(msg.colorIdentity)) existing.colorIdentity = msg.colorIdentity.slice(0, 5);
+          existing.bracket = validBracket(msg.bracket);
         } else {
           playerId = crypto.randomUUID();
           const isFirstPlayer = Object.keys(this.sessionState.players).length === 0;
@@ -501,6 +510,8 @@ export class GameSession extends DurableObject {
             displayName: (msg.displayName || "Player").slice(0, 20),
             commanderName: (msg.commanderName || "").slice(0, 40),
             colorIdentity: Array.isArray(msg.colorIdentity) ? msg.colorIdentity.slice(0, 5) : [],
+            // 1-5, or null for "didn't say". Recorded with the game result.
+            bracket: validBracket(msg.bracket),
             lifeTotal: 40,
             isHost: isFirstPlayer,
             connected: true,

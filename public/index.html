@@ -171,8 +171,22 @@
         <p id="identity-warning" class="field-note error" role="status" hidden></p>
       </fieldset>
 
+      <fieldset class="field bracket-field">
+        <legend>Bracket</legend>
+        <div class="bracket-row" role="radiogroup" aria-label="Deck bracket">
+          <button type="button" class="bracket-btn" data-bracket="1" role="radio" aria-checked="false" title="Exhibition">1</button>
+          <button type="button" class="bracket-btn" data-bracket="2" role="radio" aria-checked="false" title="Core">2</button>
+          <button type="button" class="bracket-btn" data-bracket="3" role="radio" aria-checked="false" title="Upgraded">3</button>
+          <button type="button" class="bracket-btn" data-bracket="4" role="radio" aria-checked="false" title="Optimized">4</button>
+          <button type="button" class="bracket-btn" data-bracket="5" role="radio" aria-checked="false" title="cEDH">5</button>
+          <button type="button" class="bracket-btn" data-bracket="?" role="radio" aria-checked="false" title="Not sure">??</button>
+        </div>
+        <p id="bracket-note" class="field-note">Pick one — "??" is a real answer.</p>
+      </fieldset>
+
       <p id="lobby-error" class="field-note error" hidden></p>
-      <button type="submit" class="btn btn-primary">Sit down at the table</button>
+      <button type="submit" id="btn-sit-down" class="btn btn-primary" disabled>Sit down at the table</button>
+      <p id="sit-hint" class="field-note"></p>
     </form>
 
     <section class="favorites">
