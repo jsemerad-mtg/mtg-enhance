@@ -2,3 +2,7 @@ node_modules/ .wrangler/
 node_modules/
 .wrangler/
 .DS_Store
+
+# Screenshots and files delivered into the folder by Claude — useful to look
+# at, not part of the app.
+Claude outputs/
