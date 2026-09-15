@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex" />
+<title>Sound audition — MTG Enhance</title>
+<link rel="stylesheet" href="/style.css" />
+<style>
+  /* Deliberately a plain page: this is a workbench, not part of the app. */
+  .audit { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+  .audit h1 { margin: 0 0 4px; }
+  .audit-sub { color: var(--text-muted); margin: 0 0 20px; font-size: 0.9rem; }
+
+  .audit-bar {
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    padding: 12px 0 18px; border-bottom: 1px solid var(--hairline); margin-bottom: 18px;
+  }
+  .audit-stat { color: var(--text-muted); font-size: 0.82rem; }
+
+  .snd-group { margin: 0 0 22px; }
+  .snd-group h2 {
+    font-size: 0.78rem; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--accent); margin: 0 0 8px;
+  }
+  .snd-list { list-style: none; margin: 0; padding: 0; }
+  .snd {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 12px; margin-bottom: 6px;
+    background: var(--panel); border: 1px solid var(--hairline); border-radius: 10px;
+  }
+  .snd.playing { border-color: var(--accent); }
+  .snd-play {
+    flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%;
+    border: 1px solid var(--hairline); background: none; color: var(--text);
+    font: inherit; cursor: pointer;
+  }
+  .snd-play:hover { border-color: var(--accent); }
+  .snd-name { flex: 1; min-width: 0; font-size: 0.9rem; }
+  .snd-id { display: block; font-size: 0.72rem; color: var(--text-muted); }
+  .snd-meta {
+    flex: 0 0 auto; text-align: right; font-size: 0.76rem;
+    font-variant-numeric: tabular-nums; color: var(--text-muted); line-height: 1.5;
+  }
+  /* The number that matters. Off-target is a prompt to listen, not an error. */
+  .snd-lufs.off { color: #e0a04a; font-weight: 600; }
+  .snd-missing { opacity: 0.45; }
+  .err { color: var(--danger, #d66); }
+</style>
+</head>
+<body>
+<main class="audit">
+  <h1>Sound audition</h1>
+  <p class="audit-sub">
+    Every built sound, played through the same Web Audio path the game uses —
+    decoded ahead of time into an AudioBuffer, not an &lt;audio&gt; tag. What you
+    hear here is what players hear.
+  </p>
+
+  <div class="audit-bar">
+    <button class="btn btn-primary btn-sm" type="button" id="play-all">Play all in sequence</button>
+    <button class="btn btn-secondary btn-sm" type="button" id="stop">Stop</button>
+    <span class="audit-stat" id="stats"></span>
+  </div>
+
+  <div id="out"><p class="audit-sub">Loading…</p></div>
+</main>
+
+<script>
+// Decode once, hold the buffers, trigger with an AudioBufferSourceNode. This is
+// the whole point of the page: auditioning through an <audio> tag would tell you
+// nothing about the latency or the mix players actually get.
+let ctx = null;
+const buffers = new Map();
+let current = null;
+let sequence = null;
+
+function audio() {
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: "interactive" });
+  if (ctx.state === "suspended") ctx.resume();
+  return ctx;
+}
+
+async function bufferFor(file) {
+  if (buffers.has(file)) return buffers.get(file);
+  const res = await fetch("/" + file);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const decoded = await audio().decodeAudioData(await res.arrayBuffer());
+  buffers.set(file, decoded);
+  return decoded;
+}
+
+function stopAll() {
+  if (sequence) { clearTimeout(sequence); sequence = null; }
+  if (current) { try { current.stop(); } catch {} current = null; }
+  document.querySelectorAll(".snd.playing").forEach((el) => el.classList.remove("playing"));
+}
+
+async function play(file, row) {
+  stopAll();
+  const buf = await bufferFor(file);
+  const src = audio().createBufferSource();
+  src.buffer = buf;
+  src.connect(audio().destination);
+  src.start(0);
+  current = src;
+  if (row) {
+    row.classList.add("playing");
+    src.onended = () => row.classList.remove("playing");
+  }
+  return buf.duration;
+}
+
+const GROUP_ORDER = ["universal", "W", "U", "B", "R", "G", "C"];
+const GROUP_NAMES = {
+  universal: "Universal", W: "White", U: "Blue", B: "Black",
+  R: "Red", G: "Green", C: "Colorless",
+};
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function kb(bytes) { return Math.round(bytes / 102.4) / 10 + " KB"; }
+
+function render(manifest) {
+  const byGroup = new Map();
+  for (const s of manifest.sounds) {
+    if (!byGroup.has(s.group)) byGroup.set(s.group, []);
+    byGroup.get(s.group).push(s);
+  }
+  const missingByGroup = new Map();
+  for (const m of manifest.missing) {
+    if (!missingByGroup.has(m.group)) missingByGroup.set(m.group, []);
+    missingByGroup.get(m.group).push(m);
+  }
+
+  const groups = GROUP_ORDER.filter((g) => byGroup.has(g) || missingByGroup.has(g));
+  document.getElementById("out").innerHTML = groups.map((g) => `
+    <section class="snd-group">
+      <h2>${GROUP_NAMES[g] || g}</h2>
+      <ul class="snd-list">
+        ${(byGroup.get(g) || []).map((s) => `
+          <li class="snd" data-file="${esc(s.file)}">
+            <button class="snd-play" type="button" aria-label="Play ${esc(s.label)}">&#9654;</button>
+            <span class="snd-name">${esc(s.label)}<span class="snd-id">${esc(s.id)}</span></span>
+            <span class="snd-meta">
+              <span class="snd-lufs${s.offTarget ? " off" : ""}">${s.lufs === null ? "—" : s.lufs + " LUFS"}</span><br>
+              ${s.duration}s · ${kb(s.bytes)}
+            </span>
+          </li>`).join("")}
+        ${(missingByGroup.get(g) || []).map((m) => `
+          <li class="snd snd-missing">
+            <span class="snd-play" aria-hidden="true">&middot;</span>
+            <span class="snd-name">${esc(m.label || m.id)}<span class="snd-id">${esc(m.id)}</span></span>
+            <span class="snd-meta">not authored</span>
+          </li>`).join("")}
+      </ul>
+    </section>`).join("");
+
+  const off = manifest.sounds.filter((s) => s.offTarget).length;
+  document.getElementById("stats").textContent =
+    `${manifest.sounds.length} built · ${manifest.missing.length} to author` +
+    (off ? ` · ${off} more than ${manifest.target.toleranceLu} LU off ${manifest.target.lufs} LUFS` : "") +
+    ` · built ${String(manifest.generated).slice(0, 10)}`;
+}
+
+document.getElementById("out").addEventListener("click", (e) => {
+  const row = e.target.closest(".snd[data-file]");
+  if (!row) return;
+  play(row.dataset.file, row).catch(() => {
+    row.querySelector(".snd-meta").innerHTML = '<span class="err">failed to load</span>';
+  });
+});
+
+document.getElementById("stop").addEventListener("click", stopAll);
+
+// The real test. Individually every sound can measure correctly and the set can
+// still be wrong — one that sits oddly against its neighbours only shows up when
+// you hear them back to back.
+document.getElementById("play-all").addEventListener("click", async () => {
+  stopAll();
+  const rows = [...document.querySelectorAll(".snd[data-file]")];
+  let i = 0;
+  const next = async () => {
+    if (i >= rows.length) return;
+    const row = rows[i++];
+    row.scrollIntoView({ block: "center", behavior: "smooth" });
+    let seconds = 0.5;
+    try { seconds = await play(row.dataset.file, row); } catch { /* skip a bad file */ }
+    sequence = setTimeout(next, seconds * 1000 + 250);
+  };
+  next();
+});
+
+fetch("/sounds/manifest.json", { cache: "no-store" })
+  .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
+  .then(render)
+  .catch(() => {
+    document.getElementById("out").innerHTML =
+      `<p class="audit-sub">No manifest yet. Drop source audio into <code>sounds-src/</code>
+       and run <code>npm run build:sounds</code>.</p>`;
+  });
+</script>
+</body>
+</html>
