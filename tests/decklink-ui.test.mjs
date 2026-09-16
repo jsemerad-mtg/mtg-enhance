@@ -3,6 +3,8 @@
 import pw from "playwright";
 const { chromium } = pw;
 const BASE = process.env.MTGE_TEST_BASE || "http://127.0.0.1:8232";
+// Set MTGE_CHROMIUM to a browser binary; otherwise Playwright picks its own.
+const LAUNCH = process.env.MTGE_CHROMIUM ? { executablePath: process.env.MTGE_CHROMIUM } : {};
 let pass = 0;
 const failures = [];
 function check(name, cond, detail = "") {
@@ -13,7 +15,11 @@ const SIGNED_IN = { mode: "in", state: { email: "jay@example.com", name: "Jay", 
   identities: ["WUBG"], slotsTotal: 5, slotsUsed: 1, slotsLeft: 4 } };
 await fetch(`${BASE}/__mock`, { method: "POST", body: JSON.stringify(SIGNED_IN) });
 
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" });
+// The mock server outlives any one suite, so reset its decks first — otherwise
+// whatever the last suite wrote is still here and the row counts drift.
+await fetch(`${BASE}/__reset`, { method: "POST" });
+
+const browser = await chromium.launch(LAUNCH);
 const ctx = await browser.newContext({ viewport: { width: 390, height: 900 },
   permissions: ["clipboard-read", "clipboard-write"] });
 const page = await ctx.newPage();

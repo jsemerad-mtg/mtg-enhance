@@ -9,6 +9,8 @@ import pw from "playwright";
 const { chromium } = pw;
 
 const BASE = process.env.MTGE_TEST_BASE || "http://127.0.0.1:8232";
+// Set MTGE_CHROMIUM to a browser binary; otherwise Playwright picks its own.
+const LAUNCH = process.env.MTGE_CHROMIUM ? { executablePath: process.env.MTGE_CHROMIUM } : {};
 let pass = 0;
 const failures = [];
 function check(name, cond, detail = "") {
@@ -18,7 +20,7 @@ function check(name, cond, detail = "") {
 
 await fetch(`${BASE}/__mock`, { method: "POST", body: JSON.stringify({ mode: "out", state: null }) });
 
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" });
+const browser = await chromium.launch(LAUNCH);
 const page = await browser.newPage({ viewport: { width: 390, height: 800 } });
 const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(String(e)));
@@ -74,29 +76,106 @@ console.log("\nthe feed renders what it is given, and nothing more");
   check("card entries render a placeholder, not caller text", /Loading…/.test(html));
 }
 
+console.log("\ntwo buttons, not one O");
+{
+  const r = await page.evaluate(() => {
+    const card = document.querySelector("#btn-card-lookup");
+    const rules = document.querySelector("#btn-rules");
+    return {
+      both: !!card && !!rules,
+      oldOne: !!document.querySelector("#btn-oracle"),
+      cardLabel: card?.getAttribute("aria-label"),
+      rulesLabel: rules?.getAttribute("aria-label"),
+      // Icons, not letters: the O told nobody what it did.
+      cardSvg: card?.querySelector("svg") !== null,
+      rulesSvg: rules?.querySelector("svg") !== null,
+    };
+  });
+  check("both buttons exist", r.both === true);
+  check("the old O is gone", r.oldOne === false);
+  check("the card button says what it does", /card/i.test(r.cardLabel || ""), r.cardLabel);
+  check("and so does the rules button", /rules/i.test(r.rulesLabel || ""), r.rulesLabel);
+  check("both are drawn, not lettered", r.cardSvg && r.rulesSvg);
+}
+{
+  const r = await page.evaluate(() => {
+    document.querySelector("#btn-card-lookup").click();
+    const first = document.querySelector(".oracle-modal h3")?.textContent;
+    const focused = document.activeElement?.id;
+    const title = document.querySelector("#modal-title").textContent;
+    return { first, focused, title };
+  });
+  check("the card button leads with the card section", /show a card/i.test(r.first || ""), r.first);
+  check("and puts the cursor in the card box", r.focused === "oracle-card-input", String(r.focused));
+  check("and titles the modal accordingly", /show a card/i.test(r.title), r.title);
+}
+{
+  const r = await page.evaluate(() => {
+    document.querySelector("#btn-rules").click();
+    const heads = [...document.querySelectorAll(".oracle-modal h3")].map((h) => h.textContent);
+    return { first: heads[0], all: heads, focused: document.activeElement?.id };
+  });
+  check("the rules button leads with the rules section", /rules question/i.test(r.first || ""), r.first);
+  check("and puts the cursor in the question box", r.focused === "oracle-question", String(r.focused));
+  // Both halves stay present either way: one feed, and a card lookup usually
+  // becomes a rules question about that card a moment later.
+  check("the card section is still there", r.all.some((h) => /show a card/i.test(h)), r.all.join(" | "));
+}
+
 console.log("\nunread badge");
 {
   const state = await page.evaluate(() => {
     // Not open, so the arrival should mark unread.
     muted = true;                       // don't try to make noise in a headless browser
+    closeModal();
     oracleFeed = [];
-    oracleUnread = 0;
+    oracleUnread = { card: 0, rules: 0 };
     receiveOracleEvent({ kind: "rules", askedBy: "Sam", question: "q", answer: "a" });
-    const btn = document.querySelector("#btn-oracle");
-    return { unread: oracleUnread, glowing: btn.classList.contains("has-news"), label: btn.getAttribute("aria-label") };
+    const rules = document.querySelector("#btn-rules");
+    const card = document.querySelector("#btn-card-lookup");
+    return {
+      unread: { ...oracleUnread },
+      rulesGlowing: rules.classList.contains("has-news"),
+      cardGlowing: card.classList.contains("has-news"),
+      label: rules.getAttribute("aria-label"),
+    };
   });
-  check("arrival marks one unread", state.unread === 1);
-  check("the O is told to glow", state.glowing === true);
-  check("the count reaches a screen reader", /1 new/.test(state.label), state.label);
+  check("a rules answer marks one unread answer", state.unread.rules === 1);
+  check("the scales are told to glow", state.rulesGlowing === true);
+  // The point of splitting the button: which one pulses says what arrived.
+  check("and the card button is left alone", state.cardGlowing === false);
+  check("the count reaches a screen reader", /1 new answer/.test(state.label), state.label);
+}
+{
+  const state = await page.evaluate(() => {
+    closeModal();
+    oracleUnread = { card: 0, rules: 0 };
+    receiveOracleEvent({ kind: "card", askedBy: "Sam", scryfallId: "abc" });
+    return {
+      unread: { ...oracleUnread },
+      cardGlowing: document.querySelector("#btn-card-lookup").classList.contains("has-news"),
+      rulesGlowing: document.querySelector("#btn-rules").classList.contains("has-news"),
+      label: document.querySelector("#btn-card-lookup").getAttribute("aria-label"),
+    };
+  });
+  check("a shown card marks the card button instead", state.unread.card === 1 && state.unread.rules === 0,
+    JSON.stringify(state.unread));
+  check("the card frame glows", state.cardGlowing === true);
+  check("and the scales don't", state.rulesGlowing === false);
+  check("named for a screen reader", /1 new card/.test(state.label), state.label);
 }
 {
   const after = await page.evaluate(() => {
     openOracle();
-    const btn = document.querySelector("#btn-oracle");
-    return { unread: oracleUnread, glowing: btn.classList.contains("has-news") };
+    return {
+      unread: { ...oracleUnread },
+      glowing: [...document.querySelectorAll(".header-icon.has-news")].length,
+    };
   });
-  check("opening clears the unread count", after.unread === 0);
-  check("and stops the glow", after.glowing === false);
+  // Opening either one shows the whole feed, so both counters clear.
+  check("opening clears both counts", after.unread.card === 0 && after.unread.rules === 0,
+    JSON.stringify(after.unread));
+  check("and stops every glow", after.glowing === 0, String(after.glowing));
 }
 
 console.log("\nthe ask box");

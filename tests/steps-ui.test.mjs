@@ -4,6 +4,8 @@ import pw from "playwright";
 const { chromium } = pw;
 
 const BASE = process.env.MTGE_TEST_BASE || "http://127.0.0.1:8232";
+// Set MTGE_CHROMIUM to a browser binary; otherwise Playwright picks its own.
+const LAUNCH = process.env.MTGE_CHROMIUM ? { executablePath: process.env.MTGE_CHROMIUM } : {};
 let pass = 0;
 const failures = [];
 function check(name, cond, detail = "") {
@@ -18,7 +20,10 @@ const SIGNED_IN = {
 };
 await fetch(`${BASE}/__mock`, { method: "POST", body: JSON.stringify(SIGNED_IN) });
 
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" });
+// The mock server outlives any one suite; start from a known set of decks.
+await fetch(`${BASE}/__reset`, { method: "POST" });
+
+const browser = await chromium.launch(LAUNCH);
 const page = await browser.newPage({ viewport: { width: 390, height: 800 } });
 const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(String(e)));
@@ -147,12 +152,15 @@ console.log("\nfavorites moved to the lobby");
   check("and below the form, not above it", order === "after", order);
 }
 {
-  const r = await page.evaluate(() => {
+  const r = await page.evaluate(async () => {
     favorites = [];
     expectedCommanderName = "Atraxa, Grand Unifier";
     expectedIdentity = "WUBG";
     renderFavButton();
     document.querySelector("#btn-fav-commander").click();
+    // The star writes a deck row now, so let the round trip finish before
+    // asking what the list says.
+    await new Promise((r) => setTimeout(r, 400));
     const list = document.querySelector("#favorites-list").textContent;
     return { saved: favorites.length, list, label: document.querySelector("#btn-fav-commander").textContent };
   });
@@ -161,12 +169,30 @@ console.log("\nfavorites moved to the lobby");
   check("and the star button reflects it", /Saved to favorites/.test(r.label), r.label);
 }
 {
-  const r = await page.evaluate(() => {
+  const r = await page.evaluate(async () => {
     document.querySelector("#btn-fav-commander").click();
-    return { saved: favorites.length, list: document.querySelector("#favorites-list").textContent };
+    await new Promise((r) => setTimeout(r, 400));
+    return {
+      saved: favorites.length,
+      list: document.querySelector("#favorites-list").textContent,
+      label: document.querySelector("#btn-fav-commander").textContent,
+    };
   });
   check("starring again removes it", r.saved === 0);
   check("and the list updates immediately", !/Atraxa/.test(r.list), r.list.slice(0, 120));
+  check("and the star says so", /Save to favorites/.test(r.label) && !/Saved/.test(r.label), r.label);
+}
+{
+  // The chips are the saved decks, not only what localStorage happens to hold,
+  // so a commander saved on another device reads as saved here too.
+  const r = await page.evaluate(() => {
+    favorites = [];
+    expectedCommanderName = "Krenko, Mob Boss";
+    expectedIdentity = "R";
+    renderFavButton();
+    return document.querySelector("#btn-fav-commander").textContent;
+  });
+  check("a commander saved server-side already reads as saved", /Saved to favorites/.test(r), r);
 }
 
 check("no uncaught page errors", pageErrors.length === 0, pageErrors.join(" | "));

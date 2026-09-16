@@ -763,13 +763,10 @@ function enterLobby(joinCode, knownInfo = null) {
       });
   }
 
-  // A favorite tapped on the home screen fills the commander in for you.
-  const preselect = readJson(PRESELECT_KEY, null);
-  if (preselect) {
-    const [name, ci] = splitFavorite(preselect);
-    applyCommander(name, ci);
-    try { localStorage.removeItem(PRESELECT_KEY); } catch {}
-  }
+  // Arriving at the lobby with whatever the fields hold, which after a previous
+  // game is not nothing. Without this the button and its hint describe the last
+  // table rather than this one.
+  updateSitButton();
 }
 
 // ---------- bracket ----------
@@ -793,6 +790,12 @@ function setBracket(raw) {
   updateSitButton();
 }
 
+// "a" / "a and b" / "a, b and c" — the shape a person would say out loud.
+function listPhrase(items) {
+  if (items.length <= 1) return items[0] || "";
+  return items.slice(0, -1).join(", ") + " and " + items.at(-1);
+}
+
 // The button says what's missing rather than sitting there greyed out with no
 // explanation — a disabled control with no reason is the most common way an
 // app looks broken when it's working correctly.
@@ -807,9 +810,7 @@ function updateSitButton() {
   if (!commander) missing.push("a commander");
   if (!bracketAnswered) missing.push("a bracket");
   btn.disabled = missing.length > 0;
-  hint.textContent = missing.length
-    ? `Still need ${missing.length === 1 ? missing[0] : missing.slice(0, -1).join(", ") + " and " + missing.at(-1)}.`
-    : "";
+  hint.textContent = missing.length ? `Still need ${listPhrase(missing)}.` : "";
   hint.hidden = missing.length === 0;
 }
 
@@ -1129,6 +1130,11 @@ function applyCommander(name, rawCi) {
   setNote(`${identityLabel(ci)} — colors set from ${name}.`);
   checkIdentityMismatch();
   renderFavButton();
+  // Setting .value in code fires no input event, so nothing else was telling
+  // the sit-down button that a commander had arrived. Tapping a favorite left
+  // it disabled under "Still need a commander" with the name sitting in the
+  // field above it.
+  updateSitButton();
 }
 
 function clearCommanderResolution() {
@@ -1377,7 +1383,9 @@ const HELP_HTML = `
 const ORACLE_ASKS_PER_GAME = 10;
 
 let oracleFeed = [];          // newest first
-let oracleUnread = 0;
+// Counted separately, because the two buttons mean different things: a card
+// someone held up and a rules answer are not the same news.
+let oracleUnread = { card: 0, rules: 0 };
 let oracleAsking = false;
 
 function speechSupported() {
@@ -1392,10 +1400,9 @@ function micButton(target) {
   return `<button type="button" class="mic-btn" data-mic="${target}" aria-label="Dictate">🎤</button>`;
 }
 
-function oracleHtml() {
+function oracleHtml(focus = "card") {
   const asksLeft = Math.max(0, ORACLE_ASKS_PER_GAME - (session.oracleAsked || 0));
-  return `
-    <div class="oracle-pane">
+  const cardSection = `
       <h3>Show a card</h3>
       <p class="board-hint">Puts the real card on everyone's screen — no more holding it up to the camera.</p>
       <div class="oracle-row">
@@ -1403,8 +1410,9 @@ function oracleHtml() {
         ${micButton("oracle-card-input")}
         <button class="btn btn-primary btn-sm" type="button" data-oracle="card">Show</button>
       </div>
-      <p id="oracle-card-note" class="field-note" hidden></p>
+      <p id="oracle-card-note" class="field-note" hidden></p>`;
 
+  const rulesSection = `
       <h3>Ask a rules question</h3>
       <p class="board-hint">Answered from the Comprehensive Rules, with the rule quoted.
         ${asksLeft} ${asksLeft === 1 ? "question" : "questions"} left at this table.</p>
@@ -1418,7 +1426,14 @@ function oracleHtml() {
         <button class="btn btn-primary btn-sm" type="button" data-oracle="ask"
           ${asksLeft <= 0 ? "disabled" : ""}>Ask the table</button>
       </div>
-      <p id="oracle-error" class="field-note error" hidden></p>
+      <p id="oracle-error" class="field-note error" hidden></p>`;
+
+  // Both halves are always here — they share one feed, and someone who came to
+  // look up a card often has a rules question about it a second later. What the
+  // button chooses is which one they land on.
+  return `
+    <div class="oracle-pane">
+      ${focus === "rules" ? rulesSection + cardSection : cardSection + rulesSection}
 
       <h3>At this table</h3>
       <div id="oracle-feed">${oracleFeedHtml()}</div>
@@ -1477,23 +1492,30 @@ async function fillOracleCards() {
   }
 }
 
-function openOracle() {
-  oracleUnread = 0;
+function openOracle(focus = "card") {
+  // Both counters clear: the feed they're about to read holds everything.
+  oracleUnread = { card: 0, rules: 0 };
   renderOracleBadge();
-  openModal("Ask the Oracle", oracleHtml());
+  openModal(focus === "rules" ? "Ask a rules question" : "Show a card", oracleHtml(focus));
   modalBody.classList.add("oracle-modal");
   fillOracleCards();
+  const field = $(focus === "rules" ? "#oracle-question" : "#oracle-card-input");
+  if (field) field.focus();
 }
 
-// The O pulses until it's opened. Someone mid-turn shouldn't have to watch the
-// screen to know an answer landed — but it also stops the moment they look.
+// The button pulses until it's opened. Someone mid-turn shouldn't have to watch
+// the screen to know something landed — but it also stops the moment they look.
 function renderOracleBadge() {
-  const btn = $("#btn-oracle");
+  badgeButton($("#btn-card-lookup"), oracleUnread.card, "Show a card to the table", "new card");
+  badgeButton($("#btn-rules"), oracleUnread.rules, "Ask a rules question", "new answer");
+}
+
+function badgeButton(btn, count, label, noun) {
   if (!btn) return;
-  btn.classList.toggle("has-news", oracleUnread > 0);
+  btn.classList.toggle("has-news", count > 0);
   btn.setAttribute(
     "aria-label",
-    oracleUnread > 0 ? `Ask the Oracle — ${oracleUnread} new` : "Ask the Oracle a rules question"
+    count > 0 ? `${label} — ${count} ${noun}${count === 1 ? "" : "s"}` : label
   );
 }
 
@@ -1504,7 +1526,7 @@ function receiveOracleEvent(msg) {
     const feed = $("#oracle-feed");
     if (feed) { feed.innerHTML = oracleFeedHtml(); fillOracleCards(); }
   } else {
-    oracleUnread += 1;
+    oracleUnread[msg.kind === "card" ? "card" : "rules"] += 1;
     renderOracleBadge();
   }
   if (!muted) playOracleChime();
@@ -1649,9 +1671,11 @@ const LEGAL_HTML = `
 $("#btn-legal").addEventListener("click", () => openModal("What this app collects", LEGAL_HTML));
 
 $("#btn-help").addEventListener("click", () => openModal("How this works", HELP_HTML));
-$("#btn-oracle").addEventListener("click", openOracle);
+$("#btn-card-lookup").addEventListener("click", () => openOracle("card"));
+$("#btn-rules").addEventListener("click", () => openOracle("rules"));
 
 modalBody.addEventListener("input", (e) => {
+  if (e.target.id === "cmdr-search") return renderCommanderSearch(e.target.value);
   if (e.target.id !== "oracle-question") return;
   const count = $("#oracle-count");
   if (count) count.textContent = `${e.target.value.length} / 400`;
@@ -1898,6 +1922,29 @@ const ICONS = {
   draw_card: `<rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6M9 16h3" />`,
   library: `<circle cx="12" cy="12" r="9" /><path d="M8 12h8M12 8v8" />`,
   more: `<circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" />`,
+
+  // Library sounds used to share one generic glyph, which was fine when only
+  // three slots existed and none of them held a library sound. Seven slots of
+  // the same circle would be a row of identical buttons.
+  swords: `<path d="M14.5 14.5 20 20M9.5 14.5 4 20" /><path d="M18 3.5h2.5V6l-8 8-2.5-2.5 8-8Z" /><path d="M6 3.5H3.5V6l8 8 2.5-2.5-8-8Z" />`,
+  burst: `<path d="m12 2.5 2.3 5.6 5.9.4-4.5 3.9 1.4 5.8L12 15.1l-5.1 3.1 1.4-5.8-4.5-3.9 5.9-.4L12 2.5Z" />`,
+  crown: `<path d="M3.5 8 7 11l5-6.5 5 6.5 3.5-3-1.7 9.6a1 1 0 0 1-1 .8H6.2a1 1 0 0 1-1-.8L3.5 8Z" />`,
+  shield: `<path d="M12 3.2 19 6v5c0 4.2-2.9 7.9-7 8.8C7.9 18.9 5 15.2 5 11V6l7-2.8Z" />`,
+  land: `<path d="M3 18.5h18" /><path d="m5 18.5 4.6-6.6 2.7 3.6 2-2.2 4.7 5.2" /><circle cx="17" cy="6.5" r="2" />`,
+  counter: `<circle cx="12" cy="12" r="8.6" /><path d="m8.4 8.4 7.2 7.2" />`,
+  shuffle: `<path d="M16.5 3.5H21v4.5" /><path d="M3 21 21 3.5" /><path d="M21 16v5h-4.5" /><path d="m15 15 6 6" /><path d="m3 3.5 5.5 5.5" />`,
+  skull: `<path d="M12 3c-4.3 0-7.8 3.2-7.8 7.2 0 2.4 1.2 4.4 3.1 5.7V19a1 1 0 0 0 1 1h7.4a1 1 0 0 0 1-1v-3.1c1.9-1.3 3.1-3.3 3.1-5.7C19.8 6.2 16.3 3 12 3Z" /><circle cx="9.3" cy="10.6" r="1.5" /><circle cx="14.7" cy="10.6" r="1.5" />`,
+};
+
+const LIBRARY_ICONS = {
+  attack: "swords",
+  combat_damage: "burst",
+  commander_damage: "crown",
+  block: "shield",
+  land_drop: "land",
+  counter_stack: "counter",
+  shuffle: "shuffle",
+  eliminated: "skull",
 };
 
 const BUILTINS = {
@@ -1906,15 +1953,30 @@ const BUILTINS = {
   draw_card: { label: "Draw", icon: "draw_card", message: () => ({ type: "trigger_draw_card" }) },
 };
 
-const DEFAULT_HOTKEYS = ["broadcast", "ambient", "draw_card"];
-const HOTKEY_SLOTS = 3;
+// Seven slots and More: two rows of four. The board was one row of three plus
+// More, which left the bottom of the game screen empty on every phone we tried.
+const DEFAULT_HOTKEYS = [
+  "broadcast", "ambient", "draw_card", "attack",
+  "combat_damage", "counter_stack", "land_drop",
+];
+const HOTKEY_SLOTS = 7;
 
+// Migrate rather than discard. The old check was `raw.length === HOTKEY_SLOTS`,
+// so growing the board would have silently thrown away the three hotkeys every
+// existing player had chosen. Keep their picks, fill the new slots with
+// defaults they don't already have.
 function loadHotkeys() {
+  let stored = [];
   try {
     const raw = JSON.parse(localStorage.getItem("mtge:hotkeys") || "null");
-    if (Array.isArray(raw) && raw.length === HOTKEY_SLOTS) return raw;
+    if (Array.isArray(raw)) stored = raw.filter((id) => typeof id === "string");
   } catch {}
-  return [...DEFAULT_HOTKEYS];
+  const kept = stored.slice(0, HOTKEY_SLOTS);
+  for (const id of DEFAULT_HOTKEYS) {
+    if (kept.length >= HOTKEY_SLOTS) break;
+    if (!kept.includes(id)) kept.push(id);
+  }
+  return kept;
 }
 let hotkeys = loadHotkeys();
 
@@ -1925,7 +1987,7 @@ function saveHotkeys() {
 function soundMeta(id) {
   if (BUILTINS[id]) return BUILTINS[id];
   const lib = LIBRARY_BY_ID[id];
-  return lib ? { label: lib.label, icon: "library", library: true } : null;
+  return lib ? { label: lib.label, icon: LIBRARY_ICONS[id] || "library", library: true } : null;
 }
 
 function iconButton({ soundId, label, icon, extraClass = "", sub = "" }) {
@@ -2319,7 +2381,6 @@ const SESSION_URL = "/api/player-state";
 const UNLOCK_URL = "/api/unlock-identity";
 
 const FAVORITES_KEY = "mtge:favorites";
-const PRESELECT_KEY = "mtge:preselect";
 
 function readJson(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; } catch { return fallback; }
@@ -2655,15 +2716,19 @@ function recordsHtml() {
       data-view="identity">By colours</button>
   </div>`;
 
-  const addGame = `<button class="btn btn-secondary btn-sm add-game" type="button"
-    data-records="add">Add a game played elsewhere</button>`;
+  const actions = `<div class="records-actions">
+    <button class="btn btn-secondary btn-sm" type="button"
+      data-records="addcmdr">Add a commander</button>
+    <button class="btn btn-secondary btn-sm" type="button"
+      data-records="add">Add a game played elsewhere</button>
+  </div>`;
 
   const rowData = commanderRows();
   if (!rowData.length) {
     return `${toggle}
-      <p class="empty-state">No games yet. A result is recorded when a game ends and the last
-      player standing confirms the win — or you can add one you played away from the app.</p>
-      ${addGame}`;
+      <p class="empty-state">Nothing here yet. Add the commanders you play and they'll be one
+      tap away at the table; results land here as games finish.</p>
+      ${actions}`;
   }
 
   const rows = recordsView === "identity"
@@ -2685,11 +2750,19 @@ function recordsHtml() {
           data-deck="${escapeHtml(r.commander)}"
           aria-label="${r.deck?.deck_url ? "Edit the decklist link for" : "Add a decklist link for"} ${escapeHtml(r.commander)}"
           title="${r.deck?.deck_url ? "Decklist attached" : "Attach a decklist"}">&#128206;</button>
+        ${r.deck
+          ? `<button type="button" class="fav-remove" data-drop-deck="${r.deck.id}"
+               data-drop-name="${escapeHtml(r.commander)}"
+               title="Take off your list — games already played are kept"
+               aria-label="Take ${escapeHtml(r.commander)} off your list">&times;</button>`
+          // A commander that only exists as a record — played once, never saved
+          // — has nothing to remove. The spacer holds the column.
+          : `<span class="fav-remove-spacer" aria-hidden="true"></span>`}
       </li>`);
 
   return `${toggle}<ul class="fav-list">${rows.join("")}</ul>
     ${recordsView === "commander" ? `<p class="field-note">Tap a commander to see its past games.</p>` : ""}
-    ${addGame}`;
+    ${actions}`;
 }
 
 // ---------- decklist links ----------
@@ -2809,6 +2882,108 @@ function historyHtml(games) {
     .join("")}</ul>`;
 }
 
+// ---------- adding a commander ----------
+// Searching the same bundled snapshot the lobby autocompletes against, so this
+// costs no network and arrives with the colour identity already attached —
+// which is the whole reason to pick from a list rather than type a name.
+function addCommanderHtml() {
+  return `<p>Find a commander and it joins this list, and the chips on the table
+    screen — so you can sit down with one tap instead of typing it again.</p>
+    <label class="field">
+      <span>Commander</span>
+      <input id="cmdr-search" type="text" maxlength="80" autocomplete="off"
+        placeholder="Start typing a name" />
+    </label>
+    <ul id="cmdr-results" class="cmdr-results"></ul>
+    <p id="cmdr-error" class="field-note error" hidden></p>`;
+}
+
+function renderCommanderSearch(query) {
+  const host = $("#cmdr-results");
+  if (!host) return;
+  const q = query.trim();
+  if (q.length < SUGGEST_MIN_CHARS) { host.innerHTML = ""; return; }
+
+  const mine = new Set(commanderRows().map((r) => r.commander.toLowerCase()));
+  const hits = commanderIndexState === "ready" ? searchCommanders(q) : [];
+
+  // No hits, or no index at all (never built, or offline): still offer to add
+  // exactly what was typed. A search box that refuses an unusual name is worse
+  // than one that takes it without the colours.
+  if (!hits.length) {
+    host.innerHTML = `<li><button type="button" class="cmdr-hit" data-add-cmdr="${escapeHtml(q)}|"
+      ${mine.has(q.toLowerCase()) ? "disabled" : ""}>
+      <span class="cmdr-hit-name">Add “${escapeHtml(q)}”</span>
+      <span class="field-note">${mine.has(q.toLowerCase()) ? "already yours" : "no colours on file"}</span>
+      </button></li>`;
+    return;
+  }
+
+  host.innerHTML = hits
+    .map((h) => {
+      const owned = mine.has(h.name.toLowerCase());
+      return `<li><button type="button" class="cmdr-hit"
+        data-add-cmdr="${escapeHtml(h.name)}|${escapeHtml(h.ci)}" ${owned ? "disabled" : ""}>
+        <span class="cmdr-hit-name">${escapeHtml(h.name)}</span>${pipsHtml(h.ci)}
+        ${owned ? `<span class="field-note">already yours</span>` : ""}
+      </button></li>`;
+    })
+    .join("");
+}
+
+// The deck upsert replaces every column it is given, so an existing row's
+// bracket and decklist have to travel back with it. Adding a commander must
+// never be a quiet way to erase one.
+async function saveDeckRow(name, ci) {
+  const existing = commanderRows().find((r) => r.commander.toLowerCase() === name.toLowerCase());
+  const res = await fetch("/api/decks", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      commander: name,
+      identity: existing?.identity || ci,
+      bracket: existing?.deck?.bracket ?? null,
+      deckUrl: existing?.deck?.deck_url || "",
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+}
+
+function rememberFavorite(name, ci) {
+  const entry = `${name}|${ci}`;
+  if (favorites.includes(entry)) return;
+  favorites = [...favorites, entry];
+  writeJson(FAVORITES_KEY, favorites);
+}
+
+async function addCommander(entry) {
+  const [name, ci] = splitFavorite(entry);
+  const err = $("#cmdr-error");
+  if (err) err.hidden = true;
+  try {
+    await saveDeckRow(name, ci);
+  } catch (e) {
+    if (err) { err.textContent = String(e.message || e); err.hidden = false; }
+    return;
+  }
+  // Also local, so the chips are there at the table even if the next load of
+  // /api/decks doesn't come back.
+  rememberFavorite(name, ci);
+  closeModal();
+  await loadRecords();
+}
+
+async function dropDeck(id, name) {
+  await fetch(`/api/decks/${encodeURIComponent(id)}`, {
+    method: "DELETE", credentials: "include",
+  }).catch(() => {});
+  favorites = favorites.filter((f) => splitFavorite(f)[0].toLowerCase() !== String(name).toLowerCase());
+  writeJson(FAVORITES_KEY, favorites);
+  await loadRecords();
+}
+
 // ---------- a game played away from the app ----------
 function addGameHtml() {
   const options = favorites
@@ -2905,6 +3080,17 @@ $("#records-list").addEventListener("click", (e) => {
   if (hist) return openHistory(hist.dataset.history);
   const clip = e.target.closest("[data-deck]");
   if (clip) return openDeckLink(clip.dataset.deck);
+  const drop = e.target.closest("[data-drop-deck]");
+  if (drop) {
+    drop.disabled = true;
+    return dropDeck(drop.dataset.dropDeck, drop.dataset.dropName);
+  }
+  if (e.target.closest('[data-records="addcmdr"]')) {
+    openModal("Add a commander", addCommanderHtml());
+    loadCommanderIndex();
+    $("#cmdr-search")?.focus();
+    return;
+  }
   if (e.target.closest('[data-records="add"]')) {
     openModal("Add a game", addGameHtml());
   }
@@ -2944,6 +3130,12 @@ modalBody.addEventListener("click", async (e) => {
     return;
   }
 
+  const addCmdr = e.target.closest("[data-add-cmdr]");
+  if (addCmdr) {
+    addCmdr.disabled = true;
+    return addCommander(addCmdr.dataset.addCmdr);
+  }
+
   const manual = e.target.closest("[data-manual]");
   if (manual) return submitManualGame(manual.dataset.manual === "1");
 
@@ -2967,7 +3159,8 @@ function favoritesEditorHtml() {
     return `<p class="empty-state">Sign in to save the commanders you play most.</p>`;
   }
   if (favorites.length === 0) {
-    return `<p class="empty-state">Star a commander in the lobby and it'll appear here.</p>`;
+    return `<p class="empty-state">Star a commander at the table, or add one under
+      My Commanders, and it'll appear here.</p>`;
   }
   return `<ul class="fav-list">${favorites
     .map((entry) => {
@@ -2986,6 +3179,26 @@ function splitFavorite(entry) {
   return at === -1 ? [entry, ""] : [entry.slice(0, at), entry.slice(at + 1)];
 }
 
+// The chips are My Commanders, seen from the table. Decks first — they're the
+// server-side list and follow the player between devices — with local favorites
+// filling in anything saved while signed out or not yet written back.
+//
+// The server stores colourless as "C" and the client as "", so normalise on the
+// way in rather than leaving two spellings of the same identity in circulation.
+function tableCommanders() {
+  const out = new Map();
+  for (const d of decks) {
+    if (!d.commander) continue;
+    const ci = d.identity === "C" ? "" : d.identity || "";
+    out.set(d.commander.toLowerCase(), `${d.commander}|${ci}`);
+  }
+  for (const entry of favorites) {
+    const key = splitFavorite(entry)[0].toLowerCase();
+    if (!out.has(key)) out.set(key, entry);
+  }
+  return [...out.values()].sort((a, b) => a.localeCompare(b));
+}
+
 function renderFavorites() {
   const host = $("#favorites-list");
   if (!host) return;
@@ -2993,29 +3206,47 @@ function renderFavorites() {
     host.innerHTML = `<p class="empty-state">Sign in to save the commanders you play most.</p>`;
     return;
   }
-  if (favorites.length === 0) {
-    host.innerHTML = `<p class="empty-state">Star a commander in the lobby and it'll show up here.</p>`;
+  const entries = tableCommanders();
+  if (entries.length === 0) {
+    host.innerHTML = `<p class="empty-state">Add a commander under My Commanders, or star one
+      here, and it'll be waiting next time.</p>`;
     return;
   }
-  host.innerHTML = `<div class="fav-chips">${favorites
+  host.innerHTML = `<div class="fav-chips">${entries
     .map((entry) => {
       const [name, ci] = splitFavorite(entry);
       return `<button type="button" class="fav-chip" data-preselect="${escapeHtml(entry)}">
         <span>${escapeHtml(name)}</span>${pipsHtml(ci)}${recordBadge(name)}</button>`;
     })
     .join("")}</div>
-    <p class="field-note">Tap one to use it in your next game.</p>`;
+    <p class="field-note">Tap one to fill it in above.</p>`;
 }
 
+// Tapping a chip fills the commander in, here and now. It used to stash the
+// choice in localStorage for the lobby to read on arrival — correct while
+// favorites lived on the home screen, and a no-op the moment they moved onto
+// the lobby screen itself, because the reader had already run.
 $("#favorites-list").addEventListener("click", (e) => {
   const chip = e.target.closest("[data-preselect]");
   if (!chip) return;
-  writeJson(PRESELECT_KEY, chip.dataset.preselect);
+  const [name, ci] = splitFavorite(chip.dataset.preselect);
+  applyCommander(name, ci);
   chip.classList.add("chosen");
   $("#favorites-list").querySelectorAll(".fav-chip").forEach((c) => {
     if (c !== chip) c.classList.remove("chosen");
   });
 });
+
+// One list, two places to edit it: the star here and the × under My Commanders
+// do the same thing to the same row.
+function savedRow(name) {
+  return commanderRows().find((r) => r.commander.toLowerCase() === String(name).toLowerCase());
+}
+
+function isSaved(name, entry) {
+  if (favorites.includes(entry)) return true;
+  return signedIn() && !!savedRow(name)?.deck;
+}
 
 // The lobby's star: only meaningful once a commander has actually resolved,
 // since a favorite without its color identity is no use later.
@@ -3026,17 +3257,47 @@ function renderFavButton() {
   btn.hidden = !(resolved && signedIn());
   if (btn.hidden) return;
   const entry = `${expectedCommanderName}|${expectedIdentity}`;
-  btn.textContent = favorites.includes(entry) ? "★ Saved to favorites" : "☆ Save to favorites";
+  btn.textContent = isSaved(expectedCommanderName, entry)
+    ? "★ Saved to favorites"
+    : "☆ Save to favorites";
   btn.dataset.entry = entry;
 }
 
-$("#btn-fav-commander").addEventListener("click", () => {
-  const entry = $("#btn-fav-commander").dataset.entry;
-  if (!entry) return;
-  favorites = favorites.includes(entry) ? favorites.filter((f) => f !== entry) : [...favorites, entry];
-  writeJson(FAVORITES_KEY, favorites);
-  renderFavButton();
-  renderFavorites();
+// Held shut while a write is in flight. Fire-and-forget left a window where a
+// second tap read stale decks: un-starring would find no deck row to drop, and
+// the reload from the first tap then put the chip straight back.
+$("#btn-fav-commander").addEventListener("click", async () => {
+  const btn = $("#btn-fav-commander");
+  const entry = btn.dataset.entry;
+  if (!entry || btn.disabled) return;
+  const [name, ci] = splitFavorite(entry);
+  btn.disabled = true;
+
+  try {
+    // Starring at the table is the same act as adding one under My Commanders,
+    // so it writes the same row.
+    if (!isSaved(name, entry)) {
+      rememberFavorite(name, ci);
+      renderFavorites();
+      if (signedIn()) {
+        await saveDeckRow(name, ci).catch(() => {});
+        await loadRecords();
+      }
+      return;
+    }
+
+    // And un-starring removes it, the same way the × does. What goes is the
+    // saved deck — its bracket and decklist link. Games already played live in
+    // a different table and are untouched, so this can never cost a record.
+    const row = signedIn() ? savedRow(name) : null;
+    favorites = favorites.filter((f) => splitFavorite(f)[0].toLowerCase() !== name.toLowerCase());
+    writeJson(FAVORITES_KEY, favorites);
+    if (row?.deck) await dropDeck(row.deck.id, name);
+  } finally {
+    btn.disabled = false;
+    renderFavButton();
+    renderFavorites();
+  }
 });
 
 // ---------- auth actions ----------
@@ -3277,12 +3538,16 @@ function countersHtml() {
   const poison = self.poison ?? 0;
   const damage = commanderDamageOf(self);
 
-  const banner = isLethal(self)
-    ? `<p class="lethal-banner">That's lethal — ${
-        worstCommanderDamage(self) >= COMMANDER_DAMAGE_LETHAL
-          ? `21 commander damage from one commander`
-          : `10 poison counters`
-      }.</p>`
+  // Name the reasons that are actually true. This used to be a two-way choice
+  // between commander damage and poison, with no branch for life — so a player
+  // at zero, the most ordinary way there is to lose, was told they had ten
+  // poison counters.
+  const reasons = [];
+  if ((self.lifeTotal ?? 1) <= 0) reasons.push("no life left");
+  if (worstCommanderDamage(self) >= COMMANDER_DAMAGE_LETHAL) reasons.push("21 commander damage from one commander");
+  if (poison >= POISON_LETHAL) reasons.push("10 poison counters");
+  const banner = reasons.length
+    ? `<p class="lethal-banner">That's lethal — ${listPhrase(reasons)}.</p>`
     : "";
 
   const opponents = Object.values(session.players).filter((p) => p.id !== selfId);

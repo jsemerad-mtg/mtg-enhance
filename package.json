@@ -8,7 +8,8 @@
     "deploy": "wrangler deploy",
     "build:commanders": "node scripts/build-commanders.js",
     "test": "node tests/entitlements.test.mjs && node tests/sound-auth.test.mjs",
-    "build:sounds": "node scripts/build-sounds.js"
+    "build:sounds": "node scripts/build-sounds.js",
+    "test:ui": "node tests/run-ui.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

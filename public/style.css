@@ -1672,11 +1672,14 @@ body::before {
 .oracle-card-name { margin: 6px 0 2px; font-weight: 600; }
 .oracle-card-text { margin: 0; font-size: 0.85rem; line-height: 1.5; color: var(--text); }
 
-/* The O pulses until someone opens it. Gentle and slow: this fires while
+/* The button pulses until someone opens it. Gentle and slow: this fires while
    people are mid-turn, and a hard flash at the edge of vision is the kind of
-   thing that gets an app muted rather than read. */
-#btn-oracle.has-news .oracle-glyph { color: var(--accent); }
-#btn-oracle.has-news {
+   thing that gets an app muted rather than read.
+
+   Which button glows says what arrived without opening anything — the card
+   frame for a card someone held up, the scales for a rules answer. */
+.header-icon.has-news { color: var(--accent); }
+.header-icon.has-news {
   animation: oracle-glow 1.8s ease-in-out infinite;
 }
 @keyframes oracle-glow {
@@ -1687,7 +1690,7 @@ body::before {
 /* Someone who has asked not to be animated still needs to know an answer
    arrived — so the colour stays and only the motion goes. */
 @media (prefers-reduced-motion: reduce) {
-  #btn-oracle.has-news { animation: none; box-shadow: 0 0 10px 2px rgba(217, 183, 92, 0.5); }
+  .header-icon.has-news { animation: none; box-shadow: 0 0 10px 2px rgba(217, 183, 92, 0.5); }
   .mic-btn.listening { animation: none; }
 }
 
@@ -1915,6 +1918,51 @@ body::before {
 }
 
 .add-game { width: 100%; margin-top: 14px; }
+
+/* Two actions, side by side while they fit and stacked when they don't — at
+   375px "Add a game played elsewhere" is already most of a line on its own. */
+.records-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.records-actions .btn { flex: 1 1 11rem; }
+
+/* Holds the width of the remove button on rows that don't get one, so names
+   and records stay in the same columns down the list. */
+.fav-remove-spacer { flex: 0 0 auto; width: 15px; }
+
+/* ---------- Commander search ---------- */
+
+.modal-body .cmdr-results {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.cmdr-hit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  text-align: left;
+  cursor: pointer;
+}
+.modal-body .cmdr-results li { margin: 0; }
+.cmdr-hit:hover:not(:disabled) { border-color: var(--accent-dim); }
+.cmdr-hit:disabled { opacity: 0.5; cursor: default; }
+.cmdr-hit-name { flex: 1; min-width: 0; }
 
 .history-list, .seat-list { list-style: none; margin: 0; padding: 0; }
 

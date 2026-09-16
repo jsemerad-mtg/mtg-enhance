@@ -3,6 +3,8 @@
 import pw from "playwright";
 const { chromium } = pw;
 const BASE = process.env.MTGE_TEST_BASE || "http://127.0.0.1:8232";
+// Set MTGE_CHROMIUM to a browser binary; otherwise Playwright picks its own.
+const LAUNCH = process.env.MTGE_CHROMIUM ? { executablePath: process.env.MTGE_CHROMIUM } : {};
 let pass = 0;
 const failures = [];
 function check(name, cond, detail = "") {
@@ -10,7 +12,7 @@ function check(name, cond, detail = "") {
   else { failures.push(`${name}${detail ? " — " + detail : ""}`); console.log(`  FAIL ${name} ${detail}`); }
 }
 await fetch(`${BASE}/__mock`, { method: "POST", body: JSON.stringify({ mode: "out", state: null }) });
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" });
+const browser = await chromium.launch(LAUNCH);
 const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
 const errs = []; page.on("pageerror", (e) => errs.push(String(e)));
 await page.goto(BASE);

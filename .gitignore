@@ -6,3 +6,11 @@ node_modules/
 # Screenshots and files delivered into the folder by Claude — useful to look
 # at, not part of the app.
 Claude outputs/
+
+# Source audio. Jay keeps the masters outside the project and copies them in
+# only to run `npm run build:sounds`, so they should never end up in a commit —
+# a 45-file set of WAVs is tens of MB, and git would keep every version of every
+# one forever. The built .m4a files under public/sounds/ ARE committed, so the
+# app stays reproducible from the repo alone.
+sounds-src/*
+!sounds-src/README.md
