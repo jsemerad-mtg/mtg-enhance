@@ -804,6 +804,24 @@ body {
   border-radius: 4.75% / 3.5%;
 }
 
+/* The card at the top of a commander's history. Capped by height rather than
+   width: a full-size card would push every game off the screen on a phone, and
+   the point of it is recognition, not reading the rules text. */
+.card-peek { margin: 0 0 14px; text-align: center; }
+.card-peek .card-image {
+  max-width: min(230px, 62%);
+  max-height: 36vh;
+  width: auto;
+  margin-inline: auto;
+}
+.card-peek-meta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 /* ---------- Rejoin banner ---------- */
 
 .rejoin-banner {
@@ -1003,6 +1021,14 @@ body {
 }
 
 .fav-name { flex: 1; color: var(--text); font-size: 0.88rem; }
+
+/* How many decks sit behind a colour combination. Without it the colours tab
+   is four numbers and no sense of what it is counting. */
+.fav-sub {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
 
 .fav-remove {
   background: none;

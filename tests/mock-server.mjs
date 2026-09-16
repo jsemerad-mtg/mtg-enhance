@@ -55,6 +55,11 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/api/records") {
     res.writeHead(200, { "Content-Type": "application/json" });
     if (mock.mode !== "in") return res.end(JSON.stringify({ signedIn: false, byCommander: [], byIdentity: [] }));
+    // A brand-new account: decks saved, no game ever finished. This is the
+    // shape that made the colours tab render nothing.
+    if (mock.emptyRecords) {
+      return res.end(JSON.stringify({ signedIn: true, byCommander: [], byIdentity: [] }));
+    }
     return res.end(JSON.stringify({
       signedIn: true,
       byCommander: [
@@ -68,7 +73,12 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/api/history" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
     if (mock.mode !== "in") return res.end(JSON.stringify({ signedIn: false, games: [] }));
-    return res.end(JSON.stringify({ signedIn: true, games: [
+    if (mock.emptyRecords) return res.end(JSON.stringify({ signedIn: true, games: [] }));
+    // ?commander= narrows it to one deck, the same way the Worker does. Without
+    // this the mock hands back every game for every commander, which hides the
+    // exact regression the filter exists to prevent.
+    const only = url.searchParams.get("commander");
+    const all = [
       { id: 11, game_id: "K4TM:1", commander: "Atraxa, Grand Unifier", identity: "WUBG",
         bracket: 3, won: 1, source: "game", played_at: "2026-09-12 20:10:00",
         seats: [
@@ -78,7 +88,11 @@ const server = http.createServer(async (req, res) => {
         ] },
       { id: 12, game_id: null, commander: "Atraxa, Grand Unifier", identity: "WUBG",
         bracket: null, won: 0, source: "manual", played_at: "2026-09-05 00:00:00", seats: null },
-    ] }));
+    ];
+    return res.end(JSON.stringify({
+      signedIn: true,
+      games: only ? all.filter((g) => g.commander === only) : all,
+    }));
   }
 
   if (url.pathname === "/api/history/manual" && req.method === "POST") {

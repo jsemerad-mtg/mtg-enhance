@@ -22,6 +22,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const SUITES = [
   "modes-ui", "steps-ui", "records-ui", "bracket-ui",
   "decklink-ui", "oracle-ui", "client-session-ui", "table-ui", "oppview-ui",
+  "mycommanders-ui",
 ];
 
 const server = spawn(process.execPath, [path.join(here, "mock-server.mjs")], {

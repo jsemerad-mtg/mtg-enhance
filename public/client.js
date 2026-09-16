@@ -1866,8 +1866,7 @@ function showActivity(playerId, soundId) {
 // format=image returns the card art directly, so there's no JSON round trip.
 // Browser-side only: Scryfall blocks Cloudflare Worker IPs.
 function openCardModal(name) {
-  const src = `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(name)}&format=image&version=normal`;
-  openModal(name, `<img class="card-image" src="${escapeHtml(src)}" alt="${escapeHtml(name)}" />`);
+  openModal(name, `<img class="card-image" src="${escapeHtml(scryfallImage(name))}" alt="${escapeHtml(name)}" />`);
 }
 
 // Delegated so it keeps working as opponent rows are re-rendered.
@@ -2758,6 +2757,26 @@ function commanderRows() {
   );
 }
 
+// Both tabs are two views of ONE list, so they are derived from one source.
+// The colours tab used to render the server's `byIdentity`, which is a GROUP BY
+// over game_history — so three saved decks with no games finished showed three
+// rows under "By commander" and an empty screen under "By colours". A deck you
+// have saved is yours whether or not you have finished a game with it.
+function identityRows() {
+  const out = new Map();
+  for (const r of commanderRows()) {
+    const identity = r.identity === "C" ? "" : r.identity || "";
+    const row = out.get(identity) || { identity, wins: 0, losses: 0, decks: 0 };
+    row.wins += r.wins;
+    row.losses += r.losses;
+    row.decks += 1;
+    out.set(identity, row);
+  }
+  return [...out.values()].sort(
+    (a, b) => (b.wins + b.losses) - (a.wins + a.losses) || a.identity.localeCompare(b.identity)
+  );
+}
+
 function recordsHtml() {
   if (recordsState === "guest") {
     return `<p class="empty-state">Sign in and your wins and losses are kept with each
@@ -2794,9 +2813,10 @@ function recordsHtml() {
   }
 
   const rows = recordsView === "identity"
-    ? byIdentity.map((r) => `<li class="fav-row">
-        <span class="fav-name">${escapeHtml(paletteLabel(r.identity || "C"))}</span>
-        ${pipsHtml(r.identity === "C" ? "" : r.identity)}
+    ? identityRows().map((r) => `<li class="fav-row">
+        <span class="fav-name">${escapeHtml(paletteLabel(r.identity || "C"))}<span class="fav-sub">${
+          r.decks} ${r.decks === 1 ? "deck" : "decks"}</span></span>
+        ${pipsHtml(r.identity)}
         <span class="wl"><span class="wl-w">${r.wins}</span><span class="wl-sep">–</span><span class="wl-l">${r.losses}</span></span>
         <span class="wl-pct">${winRate(r.wins, r.losses)}</span>
       </li>`)
@@ -2899,19 +2919,56 @@ async function saveDeckLink(commander, rawUrl) {
 }
 
 // ---------- one commander's past games ----------
+// Tapping a commander shows the card first, then everything that has happened
+// with it. The card viewer already existed but was bound to double-click, which
+// on a phone is close to undiscoverable — a tap on the name is the obvious
+// gesture and it was spent on the history alone.
 async function openHistory(commander) {
-  openModal(commander, `<p class="empty-state">Loading…</p>`);
+  const row = commanderRows().find((r) => r.commander === commander);
+  openModal(commander, cardPeekHtml(commander, row) +
+    `<div id="history-body"><p class="empty-state">Loading…</p></div>`);
   modalBody.classList.add("history-modal");
+  watchCardImage();
+
+  const body = () => $("#history-body");
   try {
     const res = await fetch(`/api/history?commander=${encodeURIComponent(commander)}`, {
       credentials: "include", cache: "no-store",
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    modalBody.innerHTML = historyHtml(data.games || []);
+    if (body()) body().innerHTML = historyHtml(data.games || []);
   } catch {
-    modalBody.innerHTML = `<p class="empty-state">Couldn't load those games just now.</p>`;
+    if (body()) body().innerHTML = `<p class="empty-state">Couldn't load those games just now.</p>`;
   }
+}
+
+function cardPeekHtml(commander, row) {
+  const record = row && row.wins + row.losses > 0
+    ? `<span class="wl"><span class="wl-w">${row.wins}</span><span class="wl-sep">–</span><span class="wl-l">${row.losses}</span></span>
+       <span class="wl-pct">${winRate(row.wins, row.losses)}</span>`
+    : `<span class="field-note">No finished games yet</span>`;
+  return `<figure class="card-peek">
+      <img class="card-image" alt="${escapeHtml(commander)}"
+        src="${escapeHtml(scryfallImage(commander))}" />
+      <figcaption class="card-peek-meta">${pipsHtml(row?.identity === "C" ? "" : row?.identity || "")}${record}</figcaption>
+    </figure>`;
+}
+
+function scryfallImage(name) {
+  return `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(name)}&format=image&version=normal`;
+}
+
+// A name Scryfall doesn't have — a typo, or something typed in by hand — gives a
+// 404 and a broken-image glyph. Drop the figure instead: the history below it
+// is still worth showing.
+function watchCardImage() {
+  const img = modalBody.querySelector(".card-peek .card-image");
+  if (!img) return;
+  img.addEventListener("error", () => {
+    const fig = img.closest(".card-peek");
+    if (fig) fig.innerHTML = `<p class="field-note">No card image for this name.</p>`;
+  }, { once: true });
 }
 
 function historyHtml(games) {
