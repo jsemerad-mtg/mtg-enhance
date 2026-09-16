@@ -226,6 +226,48 @@ let session = { players: {}, hostId: null, ambientActivePlayerId: null, mode: "c
 let ambientIsMine = false;
 const cooldownTimers = {}; // soundId -> interval handle
 
+// ---------- how opponents are drawn ----------
+// Boxes pack two to a row; rows give each opponent the full width. Neither wins
+// outright — boxes are compact with an even number of opponents and leave a
+// visible hole with an odd one, while rows never leave a hole but cost height.
+// So it's the player's call, remembered per device.
+const OPP_VIEW_KEY = "mtge:oppview";
+let oppView = readJson(OPP_VIEW_KEY, null);   // "boxes" | "rows" | null = not chosen
+
+// Until someone chooses, follow the count: pair up when the opponents divide
+// evenly, stack when they don't. A first-time player never sees the empty cell,
+// and the first tap on the toggle pins their preference for good.
+function effectiveOppView(count) {
+  // One opponent in a two-column grid is a card beside an empty cell, which is
+  // never what anyone wants — and the toggle is hidden at that count, so a
+  // stored "boxes" would be unfixable. Rows regardless.
+  if (count < 2) return "rows";
+  if (oppView === "boxes" || oppView === "rows") return oppView;
+  return count % 2 === 0 ? "boxes" : "rows";
+}
+
+const VIEW_ICONS = {
+  boxes: `<svg class="hdr-icon" viewBox="0 0 24 24" fill="currentColor"><rect x="3.5" y="4" width="7.4" height="6.6" rx="1.6"/><rect x="13.1" y="4" width="7.4" height="6.6" rx="1.6"/><rect x="3.5" y="13.4" width="7.4" height="6.6" rx="1.6"/><rect x="13.1" y="13.4" width="7.4" height="6.6" rx="1.6"/></svg>`,
+  rows: `<svg class="hdr-icon" viewBox="0 0 24 24" fill="currentColor"><rect x="3.5" y="4.4" width="17" height="4.4" rx="1.4"/><rect x="3.5" y="9.8" width="17" height="4.4" rx="1.4"/><rect x="3.5" y="15.2" width="17" height="4.4" rx="1.4"/></svg>`,
+};
+
+// The button shows the view it would switch TO, which is the convention every
+// list/grid toggle uses — showing the current state reads as "you are here"
+// and people tap it expecting nothing to happen.
+function renderOppViewToggle(count, view) {
+  const head = $("#opponents-head");
+  const btn = $("#btn-opp-view");
+  if (!head || !btn) return;
+  // One opponent draws the same either way, so there is nothing to choose.
+  head.hidden = count < 2;
+  if (head.hidden) return;
+  const next = view === "boxes" ? "rows" : "boxes";
+  btn.innerHTML = VIEW_ICONS[next];
+  const label = next === "rows" ? "Show opponents as rows" : "Show opponents as boxes";
+  btn.setAttribute("aria-label", label);
+  btn.title = label;
+}
+
 // Deal Damage selections: who it applies to, which of the three flavors,
 // and how much — assembled into one "Apply" press rather than firing on
 // every toggle tap.
@@ -285,15 +327,28 @@ function render() {
       const commander = p.commanderName
         ? `<span class="opponent-commander" data-commander="${escapeHtml(p.commanderName)}">${escapeHtml(p.commanderName)}</span>`
         : "";
+      // Two lines that each answer one question: who this is and how much life
+      // they have, then what they're playing and in what colours. The pips used
+      // to sit beside the name, where they pushed four-colour players' names out
+      // of their own card; beside the commander they're describing the thing
+      // they actually belong to.
+      const deck = commander || dots
+        ? `<div class="opponent-deck">${commander}${dots ? `<span class="opponent-pips">${dots}</span>` : ""}</div>`
+        : "";
       return `<div class="opponent-row${active}${doomed}" data-player-id="${escapeHtml(p.id)}" role="button" tabindex="0">
         <div class="opponent-top">
-          <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span> ${dots}${mutedIcon}${tableMarks}${outTag}</span>
+          <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span>${mutedIcon}${tableMarks}${outTag}</span>
           <span class="opponent-life">${p.lifeTotal}</span>
         </div>
-        ${commander}
+        ${deck}
       </div>`;
     })
     .join("");
+
+  const oppHost = $("#opponents");
+  const view = effectiveOppView(opponents.length);
+  oppHost.dataset.view = view;
+  renderOppViewToggle(opponents.length, view);
 
   // Damage target options: everyone at once, every opponent at once, or one
   // specific player — including yourself, for self-inflicted damage (fetch
@@ -2015,6 +2070,13 @@ function renderSoundboard() {
       <span class="icon-sub"></span>
     </button>`;
 }
+
+$("#btn-opp-view").addEventListener("click", () => {
+  const count = Math.max(0, Object.keys(session.players).length - 1);
+  oppView = effectiveOppView(count) === "boxes" ? "rows" : "boxes";
+  writeJson(OPP_VIEW_KEY, oppView);
+  render();
+});
 
 $("#soundboard").addEventListener("click", (e) => {
   const btn = e.target.closest("button");

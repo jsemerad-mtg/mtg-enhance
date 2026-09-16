@@ -273,12 +273,28 @@ body {
   cursor: pointer;
 }
 
+/* Two layouts for the same cards, chosen by the player and remembered.
+   The margin is smaller than it was to pay for the toggle row above. */
 .opponents {
   display: grid;
-  grid-template-columns: 1fr 1fr;
   gap: 10px;
-  margin-bottom: 24px;
+  margin-bottom: 14px;
 }
+
+.opponents[data-view="boxes"] { grid-template-columns: 1fr 1fr; }
+
+.opponents[data-view="rows"] { grid-template-columns: 1fr; gap: 6px; }
+.opponents[data-view="rows"] .opponent-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 13px;
+}
+.opponents[data-view="rows"] .opponent-top { flex: 0 0 auto; }
+/* The full width is the point of this view: let the commander take all of it
+   and sit against the right edge, where it lines up down the list. */
+.opponents[data-view="rows"] .opponent-deck { flex: 1; justify-content: flex-end; }
+.opponents[data-view="rows"] .opponent-life { font-size: 1.2rem; }
 
 .opponent-row {
   display: flex;
@@ -290,12 +306,29 @@ body {
   padding: 12px 14px;
 }
 
+/* Life sits beside the name rather than across the card from it: the two
+   together are one fact about one person, and a number pinned to the far edge
+   reads as belonging to the card, not to them. */
 .opponent-top {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 9px;
+  min-width: 0;
 }
+
+.opponent-deck {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+/* Pips never shrink; a long commander name gives up characters instead. Colours
+   are the thing you check at a glance — the full name is one tap away. */
+.opponent-pips { flex: 0 0 auto; display: flex; gap: 4px; }
+/* Smaller in the cramped view: every pixel the pips give back is a character
+   of commander name, and four-colour decks are where that bites. */
+.opponents[data-view="boxes"] .opponent-pips { gap: 3px; }
+.opponents[data-view="boxes"] .opponent-pips .color-dot { width: 8px; height: 8px; }
 
 .opponent-name {
   display: flex;
@@ -304,6 +337,7 @@ body {
   font-size: 0.9rem;
   font-weight: 600;
   min-width: 0;
+  flex: 0 1 auto;
 }
 
 .opponent-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -316,6 +350,8 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .color-dot {
@@ -808,7 +844,26 @@ body {
   margin-top: 14px;
 }
 
-.opponents-head { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+/* [hidden] loses to any rule that sets display, and this one does — so the
+   hidden case has to be spelled out or the toggle shows with one opponent. */
+.opponents-head { display: flex; justify-content: flex-end; margin-bottom: 5px; }
+.opponents-head[hidden] { display: none; }
+
+.view-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.view-toggle:hover { color: var(--accent); border-color: var(--accent-dim); }
+.view-toggle .hdr-icon { width: 15px; height: 15px; }
 .btn-ghost-sm { font-size: 0.75rem; padding: 5px 11px; }
 
 .opponent-row { cursor: pointer; }
