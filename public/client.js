@@ -2025,8 +2025,10 @@ modalBody.addEventListener("input", (e) => {
     const openable = !!webLink(e.target.value);
     const copyBtn = $("[data-deck-copy]");
     const openBtn = $("[data-deck-open]");
+    const shareBtn = $("[data-deck-share]");
     if (copyBtn) copyBtn.disabled = !has;
     if (openBtn) openBtn.disabled = !openable;
+    if (shareBtn) shareBtn.disabled = !openable;
     return;
   }
   if (e.target.id === "import-box") return renderImportPreview();
@@ -3305,10 +3307,38 @@ function webLink(raw) {
   return parsed.toString();
 }
 
-const EXTERNAL_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+const svgIcon = (body) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
-  class="btn-icon"><path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/><path
-  d="M18 14.5V19a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4.5"/></svg>`;
+  class="btn-icon">${body}</svg>`;
+
+const LINK_ICONS = {
+  // A floppy disk, for an object most people holding this phone have never
+  // touched. It survives because nothing has replaced it: every other "save"
+  // glyph reads as download, or as a folder.
+  save: svgIcon(`<path d="M5 3h11l3 3v15a0 0 0 0 1 0 0H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/>
+    <path d="M8 3v6h7V3"/><rect x="7.5" y="13" width="9" height="8" rx="1"/>`),
+  copy: svgIcon(`<rect x="9" y="9" width="11" height="12" rx="2"/>
+    <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>`),
+  open: svgIcon(`<path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/>
+    <path d="M18 14.5V19a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4.5"/>`),
+  // Three nodes on two edges — the Android convention. iOS draws a box with an
+  // arrow, which reads as "upload" everywhere else.
+  share: svgIcon(`<circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/>
+    <circle cx="18" cy="19" r="2.6"/><path d="M8.3 10.8 15.7 6.4"/>
+    <path d="m8.3 13.2 7.4 4.4"/>`),
+};
+
+// Feature-detected, not assumed: navigator.share is a phone and tablet API,
+// absent on plenty of desktop browsers and refused outside a secure context.
+// The button is left out entirely rather than shown dead — three buttons that
+// all work beat four where one never does.
+function canShareLinks() {
+  try {
+    return typeof navigator.share === "function"
+      && (typeof navigator.canShare !== "function"
+        || navigator.canShare({ url: "https://example.com" }));
+  } catch { return false; }
+}
 
 function deckLinkHtml(row) {
   const url = row.deck?.deck_url || "";
@@ -3322,12 +3352,18 @@ function deckLinkHtml(row) {
     </label>
     <p id="deck-error" class="field-note error" hidden></p>
     <p id="deck-note" class="field-note" hidden></p>
-    <div class="manual-actions">
-      <button class="btn btn-primary" type="button" data-deck-save="${escapeHtml(row.commander)}">Save</button>
-      <button class="btn btn-secondary" type="button" data-deck-copy="1"${url ? "" : " disabled"}>Copy</button>
+    <div class="manual-actions link-actions">
+      <button class="btn btn-primary" type="button" data-deck-save="${escapeHtml(row.commander)}"
+        title="Save this link" aria-label="Save this link">${LINK_ICONS.save}<span>Save</span></button>
+      <button class="btn btn-secondary" type="button" data-deck-copy="1"${url ? "" : " disabled"}
+        title="Copy the link" aria-label="Copy the link">${LINK_ICONS.copy}<span>Copy</span></button>
       <button class="btn btn-secondary" type="button" data-deck-open="1"${
         webLink(url) ? "" : " disabled"} title="Open the decklist in a new tab"
-        aria-label="Open the decklist in a new tab">${EXTERNAL_ICON}<span>Open</span></button>
+        aria-label="Open the decklist in a new tab">${LINK_ICONS.open}<span>Open</span></button>
+      ${canShareLinks() ? `<button class="btn btn-secondary" type="button" data-deck-share="1"
+        data-deck-share-name="${escapeHtml(row.commander)}"${
+        webLink(url) ? "" : " disabled"} title="Share the link" aria-label="Share the link">${
+        LINK_ICONS.share}<span>Share</span></button>` : ""}
     </div>
     ${url ? `<div class="auth-links">
       <button class="link-btn" type="button" data-deck-clear="${escapeHtml(row.commander)}">Remove the link</button>
@@ -4057,6 +4093,31 @@ modalBody.addEventListener("click", async (e) => {
   const clear = e.target.closest("[data-deck-clear]");
   if (clear) {
     if (await saveDeckLink(clear.dataset.deckClear, "")) closeModal();
+    return;
+  }
+
+  const share = e.target.closest("[data-deck-share]");
+  if (share) {
+    const href = webLink($("#deck-url").value);
+    const err = $("#deck-error");
+    const note = $("#deck-note");
+    if (!href) {
+      err.textContent = "That doesn't look like a web link — it should start with https://";
+      err.hidden = false;
+      return;
+    }
+    err.hidden = true;
+    // Nothing awaited yet, so this is still inside the user gesture the API
+    // requires. The commander's name rides along as the title; most targets
+    // show it, and the ones that don't lose nothing.
+    navigator.share({ title: share.dataset.deckShareName || "Decklist", url: href })
+      .catch((error) => {
+        // Cancelling the sheet is the ordinary outcome, not a failure, and
+        // reporting it as one is the classic bug with this API.
+        if (error?.name === "AbortError" || error?.name === "NotAllowedError") return;
+        note.textContent = "Couldn't open the share sheet — copy the link instead.";
+        note.hidden = false;
+      });
     return;
   }
 

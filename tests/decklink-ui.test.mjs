@@ -1,8 +1,11 @@
-// The paperclip: attaching, editing and copying a decklist link.
+// The paperclip: attaching, editing, copying and opening a decklist link.
 
-import pw from "/home/claude/.npm-global/lib/node_modules/playwright/index.js";
+import pw from "playwright";
 const { chromium } = pw;
-const BASE = "http://127.0.0.1:8232";
+
+const BASE = process.env.MTGE_TEST_BASE || "http://127.0.0.1:8232";
+// Set MTGE_CHROMIUM to a browser binary; otherwise Playwright picks its own.
+const LAUNCH = process.env.MTGE_CHROMIUM ? { executablePath: process.env.MTGE_CHROMIUM } : {};
 let pass = 0;
 const failures = [];
 function check(name, cond, detail = "") {

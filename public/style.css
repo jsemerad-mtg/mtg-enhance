@@ -2534,26 +2534,55 @@ body::before {
 .ci-filter-actions .link-btn { font-size: 0.78rem; }
 .ci-exact.is-on { color: var(--accent-bright, var(--accent)); }
 
-/* ---------- Open the decklist ---------- */
+/* ---------- The decklist link's four actions ---------- */
 
-/* Three buttons where there were two. Save keeps its weight; Copy and Open
-   share what's left and shrink rather than pushing the row off a 360px phone. */
-.manual-actions .btn-icon {
-  width: 15px;
-  height: 15px;
-  flex: 0 0 auto;
+/* Save, Copy, Open and — on a phone — Share. Scoped to .link-actions, because
+   .manual-actions is also the two-button row under manual game entry and the
+   importer, and neither wants any of this.
+
+   Save keeps its word at every width; the other three are icons. Four labelled
+   buttons don't fit a 360px phone, and the first attempt at fixing that hid
+   ALL four labels below 400px — which is most phones, and left a row of small
+   similar glyphs where the only committing action was indistinguishable from
+   the rest. An icon is fine for "copy this" and "open this". It is not fine
+   for the button that writes. */
+.link-actions {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
 }
 
-.manual-actions .btn:has(.btn-icon) {
+.link-actions .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
+  /* These are pressed, not read: 44px tall whatever the label does. */
+  min-height: 44px;
 }
 
-/* Below this the third button costs the other two their labels, so the icon
-   carries it alone — the title and aria-label already say what it does. */
-@media (max-width: 380px) {
-  .manual-actions .btn:has(.btn-icon) span { display: none; }
-  .manual-actions .btn:has(.btn-icon) { flex: 0 0 auto; padding-left: 14px; padding-right: 14px; }
+/* Save takes what's left; it is the one with consequences. */
+.link-actions .btn-primary { flex: 1 1 auto; min-width: 0; }
+
+/* The other three are square and fixed, so the row's shape doesn't shift as
+   the Share button comes and goes with the browser. */
+.link-actions .btn-secondary {
+  flex: 0 0 auto;
+  width: 46px;
+  padding: 0;
 }
+
+.link-actions .btn-secondary span {
+  /* Kept in the accessibility tree, out of the picture: the visible label is
+     the icon, but the name a screen reader reads should still be a word.
+     aria-label covers it too; this is the belt to that's braces. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.link-actions .btn-icon { width: 16px; height: 16px; flex: 0 0 auto; }
+.link-actions .btn-secondary .btn-icon { width: 18px; height: 18px; }
