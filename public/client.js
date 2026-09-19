@@ -510,6 +510,9 @@ function handleMessage(msg) {
         commanderName: lobbyInfo.commanderName ?? stored.commanderName,
         commanderName2: lobbyInfo.commanderName2 ?? stored.commanderName2 ?? "",
         deckLabel: lobbyInfo.deckLabel ?? stored.deckLabel ?? "",
+        // Each commander's OWN colours, not just the deck's union: a Gruul
+        // commander beside a Dimir one should get both palettes.
+        commanderIdentities: lobbyInfo.commanderIdentities ?? stored.commanderIdentities ?? [],
         colorIdentity: lobbyInfo.colorIdentity ?? stored.colorIdentity,
       });
       showScreen("game");
@@ -696,6 +699,9 @@ function connectAndJoin(joinCode, lobbyInfo) {
         commanderName: lobbyInfo.commanderName ?? stored.commanderName,
         commanderName2: lobbyInfo.commanderName2 ?? stored.commanderName2 ?? "",
         deckLabel: lobbyInfo.deckLabel ?? stored.deckLabel ?? "",
+        // Each commander's OWN colours, not just the deck's union: a Gruul
+        // commander beside a Dimir one should get both palettes.
+        commanderIdentities: lobbyInfo.commanderIdentities ?? stored.commanderIdentities ?? [],
         colorIdentity: lobbyInfo.colorIdentity ?? stored.colorIdentity,
         // ?? not ||, deliberately: a bracket of null means "didn't say", and
         // || would silently swap that for the stored value from a previous
@@ -996,6 +1002,13 @@ $("#form-lobby").addEventListener("submit", (e) => {
   // card was typed into.
   const [commanderName, commanderName2] = lobbyPair();
   const deckLabel = pendingDeckLabel;
+  // Ordered the same way the names are, so slot 0's colours belong to slot 0's
+  // commander.
+  const orderedFirst = tidyName(commanderName).toLowerCase() === tidyName(commanderInput.value).toLowerCase();
+  const commanderIdentities = commanderName2
+    ? (orderedFirst ? [primaryIdentity, partnerIdentity] : [partnerIdentity, primaryIdentity])
+        .map((c) => canonicalIdentity(c || ""))
+    : [];
   const colorIdentity = Array.from(document.querySelectorAll(".color-toggle input:checked")).map((el) => el.value);
 
   const pin = $("#input-join-pin").value.trim();
@@ -1007,7 +1020,7 @@ $("#form-lobby").addEventListener("submit", (e) => {
   $("#lobby-error").hidden = true;
   showScreen("game");
   connectAndJoin(pendingCode, { displayName, commanderName, commanderName2, deckLabel,
-                                colorIdentity, pin, bracket: bracketValue });
+                                commanderIdentities, colorIdentity, pin, bracket: bracketValue });
 
   // Remember the deck for next time. Fire-and-forget on purpose: this is a
   // convenience, and nobody should be kept out of a game because a deck row
@@ -2186,34 +2199,75 @@ document.addEventListener("dblclick", (e) => {
 const SOUND_LIBRARY = {
   universal: [
     ["combat_damage", "Combat Damage"], ["commander_damage", "Commander Damage"],
-    ["attack", "Attack!"], ["block", "Blockers"], ["land_drop", "Land Drop"],
-    ["counter_stack", "In Response"], ["shuffle", "Shuffle"], ["eliminated", "Eliminated"],
+    ["attack", "Attack!"], ["block", "Blockers"],
+    ["land_drop", "Land Drop"], ["counter_stack", "In Response"],
+    ["shuffle", "Shuffle"], ["eliminated", "Eliminated"],
+    ["win_game", "Victory"],
   ],
   W: [
-    ["w_wrath", "Wrath"], ["w_lifegain", "Gain Life"], ["w_exile", "Exile"],
-    ["w_tokens", "Token Swarm"], ["w_protect", "Protection"], ["w_anthem", "Anthem"],
+    ["w_wrath", "Wrath"], ["w_lifegain", "Gain Life"],
+    ["w_exile", "Exile"], ["w_tokens", "Token Swarm"],
+    ["w_protect", "Protection"], ["w_anthem", "Anthem"],
+    ["w_tax", "Tax"], ["w_lifelink", "Lifelink"],
+    ["w_disenchant", "Disenchant"],
   ],
   U: [
-    ["u_counter", "Counterspell"], ["u_draw", "Draw Extra"], ["u_scry", "Scry"],
-    ["u_bounce", "Bounce"], ["u_mill", "Mill"], ["u_steal", "Steal"], ["u_extra_turn", "Extra Turn"],
+    ["u_counter", "Counterspell"], ["u_draw", "Draw Extra"],
+    ["u_scry", "Scry"], ["u_bounce", "Bounce"],
+    ["u_mill", "Mill"], ["u_steal", "Steal"],
+    ["u_extra_turn", "Extra Turn"], ["u_copy", "Copy"],
+    ["u_tap", "Tap Down"],
   ],
   B: [
-    ["b_sacrifice", "Sacrifice"], ["b_destroy", "Destroy"], ["b_drain", "Drain"],
-    ["b_reanimate", "Reanimate"], ["b_discard", "Discard"], ["b_tutor", "Tutor"],
-    ["b_surveil", "Surveil"],
+    ["b_sacrifice", "Sacrifice"], ["b_destroy", "Destroy"],
+    ["b_drain", "Drain"], ["b_reanimate", "Reanimate"],
+    ["b_discard", "Discard"], ["b_tutor", "Tutor"],
+    ["b_paylife", "Pay Life"], ["b_dies", "Death Trigger"],
+    ["b_edict", "Edict"],
   ],
   R: [
-    ["r_burn", "Burn"], ["r_impulse", "Impulse Draw"], ["r_haste", "Haste"],
-    ["r_treasure", "Treasure"], ["r_goad", "Goad"], ["r_extra_combat", "Extra Combat"],
+    ["r_burn", "Burn"], ["r_impulse", "Impulse Draw"],
+    ["r_haste", "Haste"], ["r_treasure", "Treasure"],
+    ["r_goad", "Goad"], ["r_extra_combat", "Extra Combat"],
+    ["r_chaos", "Chaos"], ["r_double_damage", "Double Damage"],
+    ["r_landkill", "Land Destruction"],
   ],
   G: [
-    ["g_ramp", "Ramp"], ["g_counters", "+1/+1 Counters"], ["g_fight", "Fight"],
-    ["g_trample", "Trample"], ["g_bigmana", "Big Mana"], ["g_stampede", "Stampede"],
+    ["g_ramp", "Ramp"], ["g_counters", "+1/+1 Counters"],
+    ["g_fight", "Fight"], ["g_trample", "Trample"],
+    ["g_bigmana", "Big Mana"], ["g_stampede", "Stampede"],
+    ["g_draw_power", "Draw off Power"], ["g_regenerate", "Regenerate"],
+    ["g_fatty", "Cast a Fatty"],
   ],
   C: [
-    ["c_equip", "Equip"], ["c_manarock", "Mana Rock"], ["c_eldrazi", "Eldrazi"],
-    ["c_annihilator", "Annihilator"], ["c_artifact_token", "Artifact Token"],
+    ["c_equip", "Equip"], ["c_manarock", "Mana Rock"],
+    ["c_eldrazi", "Eldrazi"], ["c_annihilator", "Annihilator"],
+    ["c_artifact_token", "Artifact Token"], ["c_graveyard_exile", "Exile a Graveyard"],
+    ["c_proliferate", "Proliferate"], ["c_ultimate", "Ultimate"],
   ],
+  // Guilds and shards: one sound each, so a two- or three-colour board has
+  // something that is specifically its own rather than its parents' lists
+  // merged. Named for the keyword each combination actually shipped with.
+  WU: [["wu_flicker", "Flicker"]],
+  WB: [["wb_afterlife", "Afterlife"]],
+  WR: [["wr_boast", "Boast"]],
+  WG: [["wg_populate", "Populate"]],
+  UB: [["ub_surveil", "Surveil"]],
+  UR: [["ur_storm", "Storm"]],
+  UG: [["ug_explore", "Explore"]],
+  BR: [["br_aristocrat", "Aristocrats"]],
+  BG: [["bg_graveyard", "Graveyard Value"]],
+  RG: [["rg_riot", "Riot"]],
+  WUB: [["wub_artifice", "Artifice"]],
+  WUR: [["wur_prowess", "Prowess"]],
+  WUG: [["wug_exalted", "Exalted"]],
+  WBR: [["wbr_raid", "Raid"]],
+  WBG: [["wbg_outlast", "Outlast"]],
+  WRG: [["wrg_behemoth", "Behemoth"]],
+  UBR: [["ubr_unearth", "Unearth"]],
+  UBG: [["ubg_delve", "Delve"]],
+  URG: [["urg_ferocious", "Ferocious"]],
+  BRG: [["brg_devour", "Devour"]],
 };
 
 const LIBRARY_BY_ID = {};
@@ -2437,11 +2491,40 @@ $("#soundboard").addEventListener("click", (e) => {
 // mono-white commander isn't scrolling past mill and burn to find Wrath.
 const COLOR_NAMES = { W: "White", U: "Blue", B: "Black", R: "Red", G: "Green", C: "Colorless" };
 
-function myIdentityGroups() {
+// The deck's whole identity, plus each commander's own. They differ only for a
+// partner pair — and that difference is the point: a Gruul commander beside a
+// Dimir one is a four-colour deck whose player should have the Gruul set and
+// the Dimir set, rather than needing to own "UBRG".
+function myBoardIdentities() {
   const self = session.players[selfId];
-  const identity = canonicalIdentity((self?.colorIdentity || []).join(""));
-  if (identity === "") return ["C"];
-  return identity.split("");
+  const deck = canonicalIdentity((self?.colorIdentity || []).join("")) || "C";
+  const parts = (self?.commanderIdentities || [])
+    .map((c) => canonicalIdentity(c) || "C")
+    .filter((c, i, a) => a.indexOf(c) === i);
+  return { deck, parts: parts.length ? parts : [deck] };
+}
+
+function groupCovered(identity, group) {
+  if (group === "C" || identity === "C") return group === "C" && identity === "C";
+  return group.split("").every((c) => identity.includes(c));
+}
+
+// Every group this board could use, biggest combinations last so the mono
+// lists — which people reach for most — stay at the top.
+const GROUP_ORDER = Object.keys(SOUND_LIBRARY).filter((k) => k !== "universal");
+function myIdentityGroups() {
+  const { deck } = myBoardIdentities();
+  return GROUP_ORDER.filter((g) => groupCovered(deck, g) && (SOUND_LIBRARY[g] || []).length);
+}
+
+// Mirrors soundAllowed in src/sound-catalog.js. The server decides; this only
+// decides what to draw, and the two must agree or the board offers a button
+// that gets refused.
+function groupUnlocked(group) {
+  if (!account) return false;
+  if (account.all === true) return true;
+  const owned = account.identities || [];
+  return myBoardIdentities().parts.some((p) => owned.includes(p) && groupCovered(p, group));
 }
 
 function soundRow(id, label) {
@@ -2468,46 +2551,67 @@ function soundBoardHtml() {
       .join("")}</ul>`
   );
 
-  const key = myIdentityKey();
-  const groups = myIdentityGroups().filter((c) => (SOUND_LIBRARY[c] || []).length);
-
-  if (identityUnlocked(key)) {
-    for (const color of groups) {
-      sections.push(
-        `<h3>${COLOR_NAMES[color]}</h3><ul class="sound-list">${(SOUND_LIBRARY[color] || [])
-          .map(([id, l]) => soundRow(id, l))
-          .join("")}</ul>`
-      );
-    }
-    return `<p class="board-hint">Tap a name to play it. Star up to ${HOTKEY_SLOTS} to keep them on the main screen.</p>
-      <p id="board-warning" class="field-note error" hidden></p>${sections.join("")}`;
-  }
+  const { parts } = myBoardIdentities();
+  const groups = myIdentityGroups();
 
   // Locked palettes are shown, not hidden: a list you can read is a far better
   // pitch than an absence, and it tells the player exactly what their deck
-  // would get. Nothing here is playable or starrable.
-  const locked = (rows) =>
+  // would get. Nothing in a locked list is playable or starrable.
+  const lockedList = (rows) =>
     `<ul class="sound-list locked">${rows
       .map(([, label]) => `<li class="sound-row"><span class="sound-play is-locked">${escapeHtml(label)}</span>
         <span class="sound-star is-locked">🔒</span></li>`)
       .join("")}</ul>`;
 
-  // Three different asks, depending on what stands between them and the sounds.
+  // Group by group rather than all-or-nothing. A partner deck can own one
+  // commander's palette and not the other's, and with guilds and shards in the
+  // library even a single-commander deck has groups inside its own identity
+  // that its palette doesn't cover.
+  const openGroups = groups.filter(groupUnlocked);
+  const shutGroups = groups.filter((g) => !groupUnlocked(g));
+
+  for (const g of openGroups) {
+    sections.push(
+      `<h3>${escapeHtml(groupLabel(g))}</h3><ul class="sound-list">${(SOUND_LIBRARY[g] || [])
+        .map(([id, l]) => soundRow(id, l))
+        .join("")}</ul>`
+    );
+  }
+
+  if (!shutGroups.length) {
+    return `<p class="board-hint">Tap a name to play it. Star up to ${HOTKEY_SLOTS} to keep them on the main screen.</p>
+      <p id="board-warning" class="field-note error" hidden></p>${sections.join("")}`;
+  }
+
+  // What you would actually have to buy. For one commander that's one palette;
+  // for a partner pair it's whichever half isn't owned yet.
+  const unowned = parts.filter((p) => !(account?.identities || []).includes(p));
+  const wanted = unowned.length ? unowned : parts;
+
   let cta;
   if (!signedIn()) {
     cta = `<button class="btn btn-primary upgrade-cta" type="button" data-auth="do-signin">Sign in to unlock palettes</button>`;
   } else if ((account?.slotsLeft || 0) > 0) {
-    cta = `<button class="btn btn-primary upgrade-cta" type="button" data-auth="view-unlock-${escapeHtml(key)}">
-      Unlock ${escapeHtml(paletteLabel(key))} — uses 1 of ${account.slotsLeft}</button>`;
+    cta = wanted.map((key) => `<button class="btn btn-primary upgrade-cta" type="button"
+      data-auth="view-unlock-${escapeHtml(key)}">
+      Unlock ${escapeHtml(paletteLabel(key))} — uses 1 of ${account.slotsLeft}</button>`).join("");
   } else {
     cta = `<button class="btn btn-primary upgrade-cta" type="button" data-auth="view-upgrade">Get palette slots</button>`;
   }
 
-  return `<p class="board-hint">Every sound above is free. The ${escapeHtml(paletteLabel(key))}
-    sounds below are this deck's palette.</p>
+  // Branches on how many commanders the deck HAS, not on how many palettes are
+  // still unowned. Owning one half of a partner pair and being told the other
+  // half is "this deck's palette" is simply untrue.
+  const pitch = parts.length > 1
+    ? `Every sound above is free. Your two commanders each have their own palette —
+       ${escapeHtml(parts.map(paletteLabel).join(" and "))}.`
+    : `Every sound above is free. The ${escapeHtml(paletteLabel(parts[0] || "C"))}
+       sounds below are this deck's palette.`;
+
+  return `<p class="board-hint">${pitch}</p>
     ${cta}
     ${sections.join("")}
-    ${groups.map((c) => `<h3>${COLOR_NAMES[c]}</h3>${locked(SOUND_LIBRARY[c] || [])}`).join("")}`;
+    ${shutGroups.map((g) => `<h3>${escapeHtml(groupLabel(g))}</h3>${lockedList(SOUND_LIBRARY[g] || [])}`).join("")}`;
 }
 
 function openSoundBoardModal() {
@@ -2832,14 +2936,32 @@ function myIdentityKey() {
   return identityKey((self?.colorIdentity || []).join(""));
 }
 
-function identityUnlocked(key = myIdentityKey()) {
-  if (!account) return false;
-  return account.all === true || (account.identities || []).includes(key);
-}
+// Every Commander player knows these words, and "Simic" is a great deal
+// friendlier than "Blue · Green" on a section heading.
+const COMBO_NAMES = {
+  WU: "Azorius", WB: "Orzhov", WR: "Boros", WG: "Selesnya", UB: "Dimir",
+  UR: "Izzet", UG: "Simic", BR: "Rakdos", BG: "Golgari", RG: "Gruul",
+  WUB: "Esper", WUR: "Jeskai", WUG: "Bant", WBR: "Mardu", WBG: "Abzan",
+  WRG: "Naya", UBR: "Grixis", UBG: "Sultai", URG: "Temur", BRG: "Jund",
+  // Four-colour decks get their colours spelled out. The nephilim names —
+  // Yore-Tiller, Witch-Maw and the rest — are real, and nobody says them; a
+  // label that has to be looked up is worse than the long version.
+  WUBRG: "Five-Colour",
+};
 
 function paletteLabel(key) {
   if (key === "C") return "Colorless";
+  if (COMBO_NAMES[key]) return COMBO_NAMES[key];
   return key.split("").map((c) => COLOR_NAMES[c]).join(" · ");
+}
+
+// A section heading: the guild's name with its colours after it, since the
+// name alone doesn't say which sounds are inside.
+function groupLabel(key) {
+  if (key === "C") return "Colorless";
+  if (key.length === 1) return COLOR_NAMES[key];
+  const colours = key.split("").map((c) => COLOR_NAMES[c]).join(" · ");
+  return COMBO_NAMES[key] ? `${COMBO_NAMES[key]} — ${colours}` : colours;
 }
 
 // ---------- talking to the server about who you are ----------
@@ -3005,9 +3127,12 @@ const AUTH_VIEWS = {
   // what they're buying into and what it costs them. Without this, one game
   // with a borrowed deck silently burns a slot.
   unlock: (key) => ({
-    title: `Unlock ${paletteLabel(key)}?`,
+    // groupLabel, not paletteLabel: a button can say "Gruul", but the thing
+    // being bought should name its colours. "Unlock Gruul?" is only obvious to
+    // someone who already knows what Gruul is.
+    title: `Unlock ${groupLabel(key)}?`,
     body: `<p>This uses <strong>1 of your ${account?.slotsLeft || 0}</strong>
-      remaining palette slots. The ${escapeHtml(paletteLabel(key))} palette is
+      remaining palette slots. The ${escapeHtml(groupLabel(key))} palette is
       then yours permanently, on every device.</p>
       <p class="field-note">Playing a one-off deck? Skip it — the universal
       table sounds work for any commander.</p>

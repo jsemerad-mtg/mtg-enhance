@@ -114,7 +114,10 @@ await page.evaluate(() => openAuth("unlock", "RG"));
 await page.waitForTimeout(150);
 {
   const body = await page.textContent(".auth-modal");
-  check("names the palette", /Unlock Red · Green\?/.test(await page.textContent(".modal-title, .auth-modal")) || /Red · Green/.test(body));
+  // The guild's name AND its colours: a button can afford to say just "Gruul",
+  // but the thing being paid for should say which colours that is.
+  check("names the palette", /Red · Green/.test(body), body.slice(0, 120));
+  check("by its guild name too", /Gruul/.test(body), body.slice(0, 120));
   check("states the cost against remaining slots", /1 of your 4/.test(body.replace(/\s+/g, " ")), body.replace(/\s+/g, " ").slice(0, 200));
   check("says it's permanent", /permanently/i.test(body));
   check("warns about one-off decks", /one-off deck/i.test(body));
@@ -170,6 +173,103 @@ const boardFor = (identity, acct) =>
 {
   const html = await boardFor("WUBG", { ...SIGNED_IN.state, identities: [], all: true });
   check("owning everything unlocks without spending", !/sound-list locked/.test(html));
+}
+
+// ── guilds, shards and two commanders ───────────────────────────────────────
+console.log("\nthe board a deck actually gets");
+const boardWith = (identity, commanders, acct) =>
+  page.evaluate(([ci, cmd, a]) => {
+    session.players = { me: { colorIdentity: ci.split(""), commanderIdentities: cmd } };
+    selfId = "me";
+    account = a;
+    sessionState = "in";
+    const html = soundBoardHtml();
+    const div = document.createElement("div");
+    div.innerHTML = html;
+    return {
+      open: [...div.querySelectorAll("ul.sound-list:not(.locked)")]
+        .map((u) => u.previousElementSibling?.textContent.trim()).filter(Boolean),
+      shut: [...div.querySelectorAll("ul.sound-list.locked")]
+        .map((u) => u.previousElementSibling?.textContent.trim()).filter(Boolean),
+      ctas: [...div.querySelectorAll(".upgrade-cta")].map((b) => b.textContent.replace(/\s+/g, " ").trim()),
+      text: div.textContent.replace(/\s+/g, " ").trim(),
+    };
+  }, [identity, commanders, acct]);
+const acct = (...ids) => ({ email: "j@e.com", name: "Jay", all: false,
+  identities: ids, slotsTotal: 5, slotsUsed: ids.length, slotsLeft: 5 - ids.length });
+
+{
+  const b = await boardWith("UG", ["UG"], acct("UG"));
+  // Mono sections plus the guild's own, which is the whole reason guilds exist
+  // in the catalog: a Simic board shouldn't just be blue's list beside green's.
+  check("a Simic deck gets blue, green and Simic",
+    b.open.some((h) => /^Blue$/.test(h)) && b.open.some((h) => /^Green$/.test(h))
+      && b.open.some((h) => /Simic/.test(h)), JSON.stringify(b.open));
+  check("named by the guild, with its colours",
+    b.open.some((h) => /Simic — Blue · Green/.test(h)), JSON.stringify(b.open));
+  check("and nothing is locked", b.shut.length === 0, JSON.stringify(b.shut));
+  check("so there's no upsell", b.ctas.length === 0, JSON.stringify(b.ctas));
+}
+{
+  const b = await boardWith("UBR", ["UBR"], acct("UBR"));
+  // A shard palette contains the guilds inside it.
+  check("a Grixis deck gets its shard", b.open.some((h) => /Grixis/.test(h)), JSON.stringify(b.open));
+  check("and the three guilds inside it",
+    ["Dimir", "Izzet", "Rakdos"].every((g) => b.open.some((h) => h.includes(g))),
+    JSON.stringify(b.open));
+  check("and the three colours", ["Blue", "Black", "Red"].every((c) =>
+    b.open.some((h) => h === c)), JSON.stringify(b.open));
+  check("but nothing Simic — those colours aren't all in the deck",
+    !b.open.concat(b.shut).some((h) => /Simic/.test(h)), JSON.stringify(b.open.concat(b.shut)));
+}
+{
+  // The case the whole rule exists for.
+  const partners = ["RG", "UB"];
+  const b = await boardWith("UBRG", partners, acct("RG", "UB"));
+  check("a Gruul + Dimir pair gets both guilds",
+    b.open.some((h) => /Gruul/.test(h)) && b.open.some((h) => /Dimir/.test(h)),
+    JSON.stringify(b.open));
+  check("and all four colours",
+    ["White"].every((c) => !b.open.includes(c))
+      && ["Blue", "Black", "Red", "Green"].every((c) => b.open.includes(c)),
+    JSON.stringify(b.open));
+  // Nothing spans the two commanders: those palettes were never bought.
+  check("but no shard, and no guild that straddles the pair",
+    !b.open.some((h) => /Grixis|Sultai|Jund|Temur|Izzet|Golgari/.test(h)),
+    JSON.stringify(b.open));
+}
+{
+  const partners = ["RG", "UB"];
+  const b = await boardWith("UBRG", partners, acct("RG"));
+  check("owning only the Gruul half unlocks only Gruul",
+    b.open.some((h) => /Gruul/.test(h)) && !b.open.some((h) => /Dimir/.test(h)),
+    JSON.stringify(b.open));
+  check("the Dimir half is shown locked, not hidden",
+    b.shut.some((h) => /Dimir/.test(h)), JSON.stringify(b.shut));
+  // The upsell has to name the half they're missing, not the deck's union.
+  check("and the upsell names Dimir", b.ctas.some((t) => /Unlock Dimir/.test(t)),
+    JSON.stringify(b.ctas));
+  check("not the four-colour union", !b.ctas.some((t) => /Five-Colour|Witch/.test(t)),
+    JSON.stringify(b.ctas));
+  check("and says the two commanders each have one",
+    /two commanders each have their own palette/i.test(b.text), b.text.slice(0, 180));
+}
+{
+  const b = await boardWith("UBRG", ["RG", "UB"], acct());
+  check("owning neither offers both", b.ctas.length === 2, JSON.stringify(b.ctas));
+  check("naming each", b.ctas.some((t) => /Gruul/.test(t)) && b.ctas.some((t) => /Dimir/.test(t)),
+    JSON.stringify(b.ctas));
+}
+{
+  // A four-colour single commander is one deck and one palette, as before.
+  const b = await boardWith("WUBR", ["WUBR"], acct("WUBR"));
+  check("a four-colour commander unlocks everything inside its identity",
+    b.shut.length === 0, JSON.stringify(b.shut));
+  check("including the shards inside it",
+    ["Esper", "Jeskai", "Mardu", "Grixis"].every((g) => b.open.some((h) => h.includes(g))),
+    JSON.stringify(b.open));
+  check("and is spelled out rather than called a nephilim",
+    !/Yore-Tiller|Witch-Maw|Glint-Eye/.test(b.text), b.text.slice(0, 120));
 }
 
 check("no uncaught page errors", pageErrors.length === 0, pageErrors.join(" | "));

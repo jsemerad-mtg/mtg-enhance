@@ -96,6 +96,16 @@ const POISON_LETHAL = 10;
 // A player is out on any of the three loss conditions. Announced once on the
 // transition, not on every life change afterwards, so a player sitting at 0
 // doesn't re-trigger the sound each time anything else moves.
+// Client-supplied, so it is scrubbed to canonical WUBRG before it can decide
+// anything: at most two entries, each at most five letters, nothing else.
+function cleanIdentities(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .slice(0, 2)
+    .map((c) => canonicalIdentity(String(c || "")))
+    .filter((c, i, a) => a.indexOf(c) === i);
+}
+
 function lethalReason(player) {
   if (!player) return null;
   if ((player.lifeTotal ?? 1) <= 0) return "life";
@@ -164,6 +174,7 @@ export class GameSession extends DurableObject {
       if (typeof player.lethalAnnounced !== "boolean") player.lethalAnnounced = false;
       if (typeof player.eliminated !== "boolean") player.eliminated = false;
       if (typeof player.commanderName2 !== "string") player.commanderName2 = "";
+      if (!Array.isArray(player.commanderIdentities)) player.commanderIdentities = [];
       if (typeof player.deckLabel !== "string") player.deckLabel = "";
       migrateSeat(player);
       if (!player.commanderCasts || typeof player.commanderCasts !== "object") {
@@ -551,6 +562,9 @@ export class GameSession extends DurableObject {
           if (msg.commanderName !== undefined) existing.commanderName = msg.commanderName.slice(0, NAME_MAX);
           if (msg.commanderName2 !== undefined) existing.commanderName2 = String(msg.commanderName2 || "").slice(0, NAME_MAX);
           if (msg.deckLabel !== undefined) existing.deckLabel = String(msg.deckLabel || "").slice(0, LABEL_MAX);
+          if (msg.commanderIdentities !== undefined) {
+            existing.commanderIdentities = cleanIdentities(msg.commanderIdentities);
+          }
           if (Array.isArray(msg.colorIdentity)) existing.colorIdentity = msg.colorIdentity.slice(0, 5);
           existing.bracket = validBracket(msg.bracket);
         } else {
@@ -564,6 +578,11 @@ export class GameSession extends DurableObject {
             // Doctor's companion — the format allows two, and never more.
             commanderName2: String(msg.commanderName2 || "").slice(0, NAME_MAX),
             deckLabel: String(msg.deckLabel || "").slice(0, LABEL_MAX),
+            // Each commander's OWN colours. The union is in colorIdentity;
+            // these are what decide which palettes a partner deck may use, so
+            // a Gruul commander beside a Dimir one gets both rather than
+            // needing its owner to have bought "UBRG".
+            commanderIdentities: cleanIdentities(msg.commanderIdentities),
             colorIdentity: Array.isArray(msg.colorIdentity) ? msg.colorIdentity.slice(0, 5) : [],
             // 1-5, or null for "didn't say". Recorded with the game result.
             bracket: validBracket(msg.bracket),
@@ -938,9 +957,13 @@ export class GameSession extends DurableObject {
         // record, so nothing in this decision is client-supplied except the
         // sound id itself.
         const player = this.sessionState.players[att.playerId];
-        const identityKey =
-          canonicalIdentity((player?.colorIdentity || []).join("")) || "C";
-        if (!soundAllowed(soundId, att.entitlements, identityKey)) {
+        // The deck's whole identity decides what the board could use; each
+        // commander's own identity decides which palettes the player must own.
+        const board = {
+          identity: canonicalIdentity((player?.colorIdentity || []).join("")) || "C",
+          commanders: player?.commanderIdentities || [],
+        };
+        if (!soundAllowed(soundId, att.entitlements, board)) {
           ws.send(JSON.stringify({ type: "sound_locked", soundId }));
           return;
         }
