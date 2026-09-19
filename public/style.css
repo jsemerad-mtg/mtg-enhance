@@ -2565,10 +2565,11 @@ body::before {
 .link-actions .btn-primary { flex: 1 1 auto; min-width: 0; }
 
 /* The other three are square and fixed, so the row's shape doesn't shift as
-   the Share button comes and goes with the browser. */
+   the Share button comes and goes with the browser. 48px leaves an even margin
+   around a 26px glyph and clears the 44px touch target with room to spare. */
 .link-actions .btn-secondary {
   flex: 0 0 auto;
-  width: 46px;
+  width: 48px;
   padding: 0;
 }
 
@@ -2584,5 +2585,12 @@ body::before {
   white-space: nowrap;
 }
 
-.link-actions .btn-icon { width: 16px; height: 16px; flex: 0 0 auto; }
-.link-actions .btn-secondary .btn-icon { width: 18px; height: 18px; }
+/* Half again as large as they started. There is room for it, and at this size
+   the glyphs are legible at a glance rather than only on inspection — which is
+   the whole point of three of these four buttons having no visible label. */
+.link-actions .btn-icon { width: 24px; height: 24px; flex: 0 0 auto; }
+.link-actions .btn-secondary .btn-icon { width: 26px; height: 26px; }
+
+/* A stroke sized for a 16px glyph reads heavy at 26px. Thinning it keeps the
+   weight looking the same as the text beside it. */
+.link-actions .btn-icon { stroke-width: 1.7; }

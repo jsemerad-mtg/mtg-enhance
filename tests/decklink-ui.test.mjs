@@ -1,4 +1,4 @@
-// The paperclip: attaching, editing, copying and opening a decklist link.
+// The paperclip: attaching, editing and copying a decklist link.
 
 import pw from "playwright";
 const { chromium } = pw;
@@ -212,6 +212,117 @@ const BAD = ["javascript:alert(1)", "data:text/html,<h1>hi", "moxfield.com/x", "
   check("and each says what a link should look like",
     r.errs.every((t) => /should start with https/.test(t)), JSON.stringify(r.errs));
 }
+console.log("\nsharing, where the browser has a share sheet");
+{
+  // Headless Chromium has none, which is the honest default case: the button
+  // is left out rather than shown dead.
+  const r = await page.evaluate(() => ({
+    has: typeof navigator.share === "function",
+    button: !!document.querySelector("[data-deck-share]"),
+    buttons: document.querySelectorAll(".link-actions .btn").length,
+  }));
+  check("no share sheet, no share button", r.has === false && r.button === false,
+    JSON.stringify(r));
+  check("leaving the other three", r.buttons === 3, String(r.buttons));
+}
+{
+  const r = await page.evaluate(async () => {
+    Object.defineProperty(navigator, "share", {
+      value: () => Promise.resolve(), configurable: true, writable: true,
+    });
+    document.querySelector('[data-deck="Shorikai, Genesis Engine"]').click();
+    await new Promise((res) => setTimeout(res, 120));
+    return {
+      button: !!document.querySelector("[data-deck-share]"),
+      buttons: document.querySelectorAll(".link-actions .btn").length,
+      names: [...document.querySelectorAll(".link-actions .btn")]
+        .map((b) => b.getAttribute("aria-label")),
+    };
+  });
+  check("a browser with one gets the button", r.button === true);
+  check("making four", r.buttons === 4, String(r.buttons));
+  // Three of the four are icon-only, so the accessible name is the only name.
+  check("and every button still says what it is in words",
+    r.names.every((n) => n && n.length > 3), JSON.stringify(r.names));
+}
+{
+  const r = await page.evaluate(async () => {
+    const calls = [];
+    navigator.share = (data) => { calls.push(data); return Promise.resolve(); };
+    document.querySelector("[data-deck-share]").click();
+    await new Promise((res) => setTimeout(res, 120));
+    return { calls, note: document.querySelector("#deck-note").hidden };
+  });
+  check("sharing hands over the link", r.calls[0]?.url === "https://moxfield.com/decks/abc",
+    JSON.stringify(r.calls[0]));
+  check("with the commander as the title",
+    r.calls[0]?.title === "Shorikai, Genesis Engine", String(r.calls[0]?.title));
+  check("and says nothing when it works", r.note === true);
+}
+{
+  // Cancelling the sheet rejects with AbortError. Reporting that as a failure
+  // is the classic bug with this API — the user did exactly what they meant to.
+  const r = await page.evaluate(async () => {
+    const err = new Error("cancelled"); err.name = "AbortError";
+    navigator.share = () => Promise.reject(err);
+    document.querySelector("#deck-note").hidden = true;
+    document.querySelector("[data-deck-share]").click();
+    await new Promise((res) => setTimeout(res, 150));
+    return document.querySelector("#deck-note").hidden;
+  });
+  check("cancelling the share sheet is not an error", r === true);
+}
+{
+  const r = await page.evaluate(async () => {
+    navigator.share = () => Promise.reject(new Error("boom"));
+    document.querySelector("[data-deck-share]").click();
+    await new Promise((res) => setTimeout(res, 150));
+    const note = document.querySelector("#deck-note");
+    return { hidden: note.hidden, text: note.textContent };
+  });
+  check("but a real failure says so", r.hidden === false);
+  check("and points at copying instead", /copy the link/i.test(r.text), r.text);
+}
+{
+  const r = await page.evaluate(async () => {
+    const box = document.querySelector("#deck-url");
+    box.value = "not a link";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((res) => setTimeout(res, 60));
+    const off = document.querySelector("[data-deck-share]").disabled;
+    box.value = "https://moxfield.com/decks/abc";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((res) => setTimeout(res, 60));
+    return { off, on: document.querySelector("[data-deck-share]").disabled };
+  });
+  check("share follows the field like the others do", r.off === true && r.on === false,
+    JSON.stringify(r));
+}
+{
+  // Four buttons on the narrowest phone we support.
+  await page.setViewportSize({ width: 360, height: 780 });
+  await page.waitForTimeout(150);
+  const fit = await page.evaluate(() => {
+    const row = document.querySelector(".link-actions").getBoundingClientRect();
+    const card = document.querySelector("#modal-body").getBoundingClientRect();
+    const btns = [...document.querySelectorAll(".link-actions .btn")];
+    return {
+      overflows: row.right > card.right + 1,
+      rows: new Set(btns.map((b) => Math.round(b.getBoundingClientRect().top))).size,
+      short: btns.filter((b) => b.getBoundingClientRect().height < 44).length,
+      narrow: btns.filter((b) => b.getBoundingClientRect().width < 40).length,
+      saveLabel: !!document.querySelector(".link-actions .btn-primary span")?.offsetParent,
+    };
+  });
+  check("four buttons fit a 360px phone", fit.overflows === false);
+  check("on one row", fit.rows === 1, String(fit.rows));
+  check("none of them too short to press", fit.short === 0, String(fit.short));
+  check("or too narrow", fit.narrow === 0, String(fit.narrow));
+  // An icon is fine for "copy this". It is not fine for the button that writes.
+  check("and Save keeps its word", fit.saveLabel === true);
+  await page.setViewportSize({ width: 390, height: 844 });
+}
+
 {
   // Some browsers refuse the tab. Saying so beats a button that looks broken.
   const r = await page.evaluate(async () => {
