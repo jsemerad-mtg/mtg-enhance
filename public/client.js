@@ -3089,7 +3089,13 @@ const BRACKETS = { 1: "Exhibition", 2: "Core", 3: "Upgraded", 4: "Optimized", 5:
 // someone with six mono-red decks cares more about how red does than how each
 // build does. It's one log and two GROUP BYs on the server, so offering both
 // costs a toggle, not a feature.
-let recordsView = "commander";
+// Which colours the deck list is narrowed to, as a Set of WUBRG letters. Empty
+// means everything. "C" is its own member, for colourless decks.
+let deckFilter = new Set();
+// Off: a deck matches if it CONTAINS every colour picked, so each tap narrows.
+// On: its identity must be exactly the colours picked — "my Simic decks" rather
+// than "anything with blue and green in it".
+let deckFilterExact = false;
 
 function winRate(w, l) {
   const played = w + l;
@@ -3129,19 +3135,62 @@ function commanderRows() {
 // over game_history — so three saved decks with no games finished showed three
 // rows under "By commander" and an empty screen under "By colours". A deck you
 // have saved is yours whether or not you have finished a game with it.
-function identityRows() {
-  const out = new Map();
-  for (const r of commanderRows()) {
-    const identity = r.identity === "C" ? "" : r.identity || "";
-    const row = out.get(identity) || { identity, wins: 0, losses: 0, decks: 0 };
-    row.wins += r.wins;
-    row.losses += r.losses;
-    row.decks += 1;
-    out.set(identity, row);
+// Does this deck match the colours currently picked? Contains-by-default, so
+// every extra chip narrows the list; exact when asked, because "my Simic decks"
+// and "anything with blue and green in it" are different questions.
+function deckMatchesFilter(identity) {
+  if (deckFilter.size === 0) return true;
+  const ci = identity === "C" ? "" : canonicalIdentity(identity);
+  if (deckFilter.has("C")) {
+    // Colourless is a state, not a colour, so it can't be combined with one.
+    return ci === "";
   }
-  return [...out.values()].sort(
-    (a, b) => (b.wins + b.losses) - (a.wins + a.losses) || a.identity.localeCompare(b.identity)
-  );
+  if (deckFilterExact) {
+    return ci === WUBRG.filter((c) => deckFilter.has(c)).join("");
+  }
+  return [...deckFilter].every((c) => ci.includes(c));
+}
+
+// The chips: five colours, plus colourless only when there is a colourless deck
+// to find. A control that can only ever return nothing is worse than no control.
+function deckFilterHtml(rows) {
+  const counts = new Map();
+  for (const r of rows) {
+    const ci = r.identity === "C" ? "" : canonicalIdentity(r.identity || "");
+    if (ci === "") counts.set("C", (counts.get("C") || 0) + 1);
+    for (const c of ci) counts.set(c, (counts.get(c) || 0) + 1);
+  }
+  const keys = WUBRG.filter((c) => counts.get(c)).concat(counts.get("C") ? ["C"] : []);
+  if (keys.length < 2) return ""; // nothing to narrow
+
+  const chips = keys.map((c) => {
+    const on = deckFilter.has(c);
+    return `<button type="button" class="ci-chip${on ? " is-on" : ""}"
+      data-cifilter="${c}" aria-pressed="${on}"
+      title="${escapeHtml(paletteLabel(c))} — ${counts.get(c)} deck${counts.get(c) === 1 ? "" : "s"}">
+      <span class="color-dot color-${c.toLowerCase()}"></span></button>`;
+  }).join("");
+
+  const picked = deckFilter.size > 0;
+  const showing = rows.filter((r) => deckMatchesFilter(r.identity)).length;
+  // Exact is meaningless on one colour and impossible on colourless, so it only
+  // appears once it can change the answer.
+  const canExact = deckFilter.size > 1 && !deckFilter.has("C");
+  // Five bare dots don't announce themselves as a filter, and with a hundred
+  // decks the count at the bottom of the list is seven screens away from the
+  // control that changed it. Both live here instead.
+  return `<div class="ci-filter">
+    <div class="ci-chips">${chips}</div>
+    <p class="ci-count">${picked
+      ? `${showing} of ${rows.length} ${rows.length === 1 ? "deck" : "decks"}`
+      : "Tap a colour to narrow"}</p>
+    ${picked ? `<div class="ci-filter-actions">
+      ${canExact ? `<button type="button" class="link-btn ci-exact${deckFilterExact ? " is-on" : ""}"
+        data-ciexact="1" aria-pressed="${deckFilterExact}">${
+        deckFilterExact ? "Exactly these colours" : "Any deck with these"}</button>` : ""}
+      <button type="button" class="link-btn" data-ciclear="1">Show all</button>
+    </div>` : ""}
+  </div>`;
 }
 
 function recordsHtml() {
@@ -3165,12 +3214,7 @@ function recordsHtml() {
        short and decklist links are missing. Nothing has been deleted.</p>`
     : "";
 
-  const toggle = `<div class="seg">
-    <button type="button" class="seg-btn${recordsView === "commander" ? " is-on" : ""}"
-      data-view="commander">By commander</button>
-    <button type="button" class="seg-btn${recordsView === "identity" ? " is-on" : ""}"
-      data-view="identity">By colours</button>
-  </div>`;
+
 
   const actions = `<div class="records-actions">
     <button class="btn btn-secondary btn-sm" type="button"
@@ -3183,29 +3227,37 @@ function recordsHtml() {
 
   const rowData = commanderRows();
   if (!rowData.length) {
-    return `${toggle}
-      ${deckWarning}
+    return `${deckWarning}
       <p class="empty-state">Nothing here yet. Add the commanders you play and they'll be one
       tap away at the table; results land here as games finish.</p>
       ${actions}`;
   }
 
-  const rows = recordsView === "identity"
-    ? identityRows().map((r) => `<li class="fav-row">
-        <span class="fav-name">${escapeHtml(paletteLabel(r.identity || "C"))}<span class="fav-sub">${
-          r.decks} ${r.decks === 1 ? "deck" : "decks"}</span></span>
-        ${pipsHtml(r.identity)}
-        <span class="wl"><span class="wl-w">${r.wins}</span><span class="wl-sep">–</span><span class="wl-l">${r.losses}</span></span>
-        <span class="wl-pct">${winRate(r.wins, r.losses)}</span>
-      </li>`)
-    // Only the per-commander rows are tappable: there is no such thing as the
-    // history of a colour combination, only of the decks inside it.
-    : rowData.map((r) => `<li class="fav-row">
+  const filter = deckFilterHtml(rowData);
+  const shown = rowData.filter((r) => deckMatchesFilter(r.identity));
+
+  // A filter that hides everything has to say so, or it reads as lost decks —
+  // the same failure as an empty list standing in for a failed query.
+  if (!shown.length) {
+    return `${deckWarning}${filter}
+      <p class="empty-state">No decks in those colours. ${
+        deckFilterExact ? "Try \u201cAny deck with these\u201d, or " : ""}tap a colour again to
+        drop it.</p>
+      ${actions}`;
+  }
+
+  // Before the first game, every row reads "0 – 0 —" and three columns of that
+  // are taking the width the deck names need — which at a hundred decks is the
+  // difference between one line and four. They come back the moment there is a
+  // result to put in them.
+  const anyGames = rowData.some((r) => r.wins + r.losses > 0);
+
+  const rows = shown.map((r) => `<li class="fav-row">
         <button type="button" class="fav-name link-name" data-history="${escapeHtml(r.commander)}">
           ${escapeHtml(r.commander)}</button>
         ${pipsHtml(r.identity === "C" ? "" : r.identity)}
-        <span class="wl"><span class="wl-w">${r.wins}</span><span class="wl-sep">–</span><span class="wl-l">${r.losses}</span></span>
-        <span class="wl-pct">${winRate(r.wins, r.losses)}</span>
+        ${anyGames ? `<span class="wl"><span class="wl-w">${r.wins}</span><span class="wl-sep">–</span><span class="wl-l">${r.losses}</span></span>
+        <span class="wl-pct">${winRate(r.wins, r.losses)}</span>` : ""}
         <button type="button" class="clip-btn${r.deck?.deck_url ? " has-link" : ""}"
           data-deck="${escapeHtml(r.commander)}"
           aria-label="${r.deck?.deck_url ? "Edit the decklist link for" : "Add a decklist link for"} ${escapeHtml(r.commander)}"
@@ -3220,8 +3272,10 @@ function recordsHtml() {
           : `<span class="fav-remove-spacer" aria-hidden="true"></span>`}
       </li>`);
 
-  return `${toggle}${deckWarning}<ul class="fav-list">${rows.join("")}</ul>
-    ${recordsView === "commander" ? `<p class="field-note">Tap a commander to see its past games.</p>` : ""}
+  return `${deckWarning}${filter}<ul class="fav-list">${rows.join("")}</ul>
+    <p class="field-note">${anyGames
+      ? "Tap a commander to see its past games."
+      : "Tap a commander to see its games — records appear here once you've finished one."}</p>
     ${actions}`;
 }
 
@@ -3901,15 +3955,35 @@ function renderRecords() {
 }
 
 function openRecords() {
+  // A filter left on from last time reads as missing decks, so the screen
+  // always opens showing everything.
+  deckFilter = new Set();
+  deckFilterExact = false;
   showScreen("stats");
   renderRecords();
   loadRecords();
 }
 
 $("#records-list").addEventListener("click", (e) => {
-  const view = e.target.closest("[data-view]");
-  if (view) {
-    recordsView = view.dataset.view;
+  const ci = e.target.closest("[data-cifilter]");
+  if (ci) {
+    const c = ci.dataset.cifilter;
+    if (deckFilter.has(c)) deckFilter.delete(c);
+    else if (c === "C") deckFilter = new Set(["C"]);   // colourless stands alone
+    else { deckFilter.delete("C"); deckFilter.add(c); }
+    // Exact means nothing on one colour, so it doesn't linger into one.
+    if (deckFilter.size < 2) deckFilterExact = false;
+    renderRecords();
+    return;
+  }
+  if (e.target.closest("[data-ciexact]")) {
+    deckFilterExact = !deckFilterExact;
+    renderRecords();
+    return;
+  }
+  if (e.target.closest("[data-ciclear]")) {
+    deckFilter = new Set();
+    deckFilterExact = false;
     renderRecords();
     return;
   }

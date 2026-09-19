@@ -43,10 +43,17 @@ const toStats = async () => {
   await page.click('[data-pick="stats"]');
   await page.waitForFunction(() => recordsState === "ready");
 };
-const tab = async (which) => {
-  await page.click(`[data-view="${which}"]`);
+const chip = async (c) => {
+  await page.click(`[data-cifilter="${c}"]`);
   await page.waitForTimeout(100);
 };
+const filterState = () => page.evaluate(() => ({
+  chips: [...document.querySelectorAll("[data-cifilter]")].map((b) => b.dataset.cifilter),
+  on: [...document.querySelectorAll("[data-cifilter].is-on")].map((b) => b.dataset.cifilter),
+  count: document.querySelector(".ci-count")?.textContent.trim() || "",
+  exact: document.querySelector("[data-ciexact]")?.textContent.trim() || null,
+  clear: !!document.querySelector("[data-ciclear]"),
+}));
 const listRows = () => page.evaluate(() =>
   [...document.querySelectorAll("#records-list .fav-row")]
     .map((li) => li.textContent.replace(/\s+/g, " ").trim()));
@@ -59,33 +66,109 @@ await fetch(`${BASE}/__mock`, { method: "POST",
 await page.goto(BASE);
 await page.waitForFunction(() => sessionState === "in");
 await page.evaluate(async () => {
-  // A third deck, so the two tabs have something to disagree about.
+  // A third deck, so the colour filter has something to narrow.
   await saveDeckRow("Atraxa, Grand Unifier", "WUBG");
   await loadRecords();
 });
 await toStats();
 {
   const rows = await listRows();
-  check("by commander lists all three", rows.length === 3, JSON.stringify(rows));
+  check("one list, every deck on it", rows.length === 3, JSON.stringify(rows));
+  // Decks saved but never played used to vanish under a By colours tab that
+  // read the server's GROUP BY over finished games. There is one list now, and
+  // a saved deck is on it whether or not a game has finished.
+  check("including ones with no games yet",
+    rows.every((r) => /0.*0/.test(r)), JSON.stringify(rows));
 }
 {
-  await tab("identity");
-  const rows = await listRows();
-  // The bug: this tab read the server's GROUP BY over finished games, so three
-  // saved decks and no games rendered an empty screen.
-  check("by colours is not empty", rows.length > 0, JSON.stringify(rows));
-  check("one row per colour combination", rows.length === 3, JSON.stringify(rows));
-  check("and it says how many decks each holds",
-    rows.every((r) => /1 deck\b/.test(r)), JSON.stringify(rows));
-  check("with zero-zero records, not blanks",
-    rows.every((r) => /0.*0/.test(r)), JSON.stringify(rows));
+  const f = await filterState();
+  // Only colours actually in the collection get a chip: a control that can
+  // only ever return nothing is worse than no control. Derived from the data
+  // rather than hard-coded, so it keeps testing that as the fixtures change.
+  const present = await page.evaluate(() => {
+    const seen = new Set();
+    for (const r of commanderRows()) {
+      const ci = r.identity === "C" ? "" : canonicalIdentity(r.identity || "");
+      if (ci === "") seen.add("C");
+      for (const c of ci) seen.add(c);
+    }
+    return ["W", "U", "B", "R", "G", "C"].filter((c) => seen.has(c));
+  });
+  check("a chip per colour present, and no others",
+    f.chips.join("") === present.join(""), `${f.chips.join("")} vs ${present.join("")}`);
+  check("and there is more than one to choose from", f.chips.length > 1, f.chips.join(""));
+  check("none picked to begin with", f.on.length === 0, JSON.stringify(f.on));
+  check("and it says what the chips are for", /Tap a colour/i.test(f.count), f.count);
+  check("with nothing to clear yet", f.clear === false);
 }
 {
   const pips = await page.evaluate(() =>
     [...document.querySelectorAll("#records-list .fav-row")]
       .map((li) => li.querySelectorAll(".color-dot").length));
-  check("each row shows its colours", pips.join() === "4,2,1" || pips.join() === "1,2,4",
+  check("each deck shows its colours", pips.sort().join() === "1,2,4",
     JSON.stringify(pips));
+}
+
+console.log("\nnarrowing by colour");
+{
+  await chip("U");
+  const rows = await listRows();
+  const f = await filterState();
+  check("blue narrows to the blue decks", rows.length === 2, JSON.stringify(rows));
+  check("the chip reads as picked", f.on.join("") === "U", f.on.join(""));
+  check("and the count says how far it narrowed", /2 of 3 decks/.test(f.count), f.count);
+  check("with a way back to everything", f.clear === true);
+  // One colour can't be "exact" in any useful sense.
+  check("and no exact toggle on a single colour", f.exact === null, String(f.exact));
+}
+{
+  await chip("B");
+  const rows = await listRows();
+  const f = await filterState();
+  // Contains, not equals: each tap narrows, which is what a chip row implies.
+  check("a second colour narrows further", rows.length === 1, JSON.stringify(rows));
+  check("to the deck that has both", /Shorikai|Atraxa/.test(rows[0] || ""), rows[0]);
+  check("now the exact toggle appears", f.exact !== null, String(f.exact));
+  check("offering the other reading", /Any deck with these/i.test(f.exact), f.exact);
+}
+{
+  await page.click("[data-ciexact]");
+  await page.waitForTimeout(100);
+  const rows = await listRows();
+  const f = await filterState();
+  // Exactly UB is a deck nobody here has — and saying so beats an empty list
+  // that reads like the decks went missing.
+  check("exactly those colours can be none of them", rows.length === 0, JSON.stringify(rows));
+  check("and the screen says why", await page.evaluate(() =>
+    /No decks in those colours/i.test(document.querySelector("#records-list").textContent)));
+  check("offering the way out", await page.evaluate(() =>
+    /Any deck with these/i.test(document.querySelector("#records-list").textContent)));
+  check("the toggle now reads the other way", /Exactly these colours/i.test(f.exact), f.exact);
+}
+{
+  await chip("B");
+  const f = await filterState();
+  // Dropping back to one colour makes "exact" meaningless, so it must not
+  // linger and silently keep filtering.
+  check("dropping to one colour retires the exact toggle", f.exact === null, String(f.exact));
+  const rows = await listRows();
+  check("and the list is the contains list again", rows.length === 2, JSON.stringify(rows));
+}
+{
+  await page.click("[data-ciclear]");
+  await page.waitForTimeout(100);
+  const rows = await listRows();
+  const f = await filterState();
+  check("show all brings everything back", rows.length === 3, JSON.stringify(rows));
+  check("and clears the chips", f.on.length === 0, JSON.stringify(f.on));
+}
+{
+  // A filter left on from a previous visit reads as missing decks.
+  await chip("U");
+  await page.evaluate(() => showScreen("home"));
+  await toStats();
+  const f = await filterState();
+  check("the screen opens showing everything", f.on.length === 0, JSON.stringify(f.on));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,28 +179,36 @@ await page.reload();
 await page.waitForFunction(() => sessionState === "in");
 await toStats();
 {
-  await tab("identity");
   const rows = await listRows();
-  const wubg = rows.find((r) => /4.*3/.test(r));
-  check("a played commander keeps its record", !!wubg, JSON.stringify(rows));
+  const atraxa = rows.find((r) => /Atraxa/.test(r));
+  check("a played commander keeps its record", /4.*3/.test(atraxa || ""), atraxa);
   // Krenko is both a saved deck and a played commander; it must appear once.
-  const reds = rows.filter((r) => /^Red/.test(r));
-  check("a deck that has also been played counts once", reds.length === 1, JSON.stringify(reds));
-  check("and carries its games", /1.*5/.test(reds[0] || ""), reds[0]);
+  const krenko = rows.filter((r) => /Krenko/.test(r));
+  check("a deck that has also been played is listed once", krenko.length === 1,
+    JSON.stringify(krenko));
+  check("and carries its games", /1.*5/.test(krenko[0] || ""), krenko[0]);
 }
 {
-  // Totals must agree across the two tabs, or one of them is lying.
-  const sums = await page.evaluate(() => {
-    const add = (rows) => rows.reduce((a, r) => ({ w: a.w + r.wins, l: a.l + r.losses }), { w: 0, l: 0 });
-    return { byCommander: add(commanderRows()), byIdentity: add(identityRows()) };
-  });
-  check("the two tabs add up to the same record",
-    JSON.stringify(sums.byCommander) === JSON.stringify(sums.byIdentity), JSON.stringify(sums));
+  // Filtering must never change a record — only which rows you can see.
+  const before = await page.evaluate(() =>
+    commanderRows().reduce((a, r) => ({ w: a.w + r.wins, l: a.l + r.losses }), { w: 0, l: 0 }));
+  await chip("R");
+  const filtered = await page.evaluate(() => ({
+    shown: document.querySelectorAll("#records-list .fav-row").length,
+    all: commanderRows().length,
+  }));
+  await page.click("[data-ciclear]");
+  await page.waitForTimeout(100);
+  const after = await page.evaluate(() =>
+    commanderRows().reduce((a, r) => ({ w: a.w + r.wins, l: a.l + r.losses }), { w: 0, l: 0 }));
+  check("a filter hides rows rather than changing them",
+    JSON.stringify(before) === JSON.stringify(after), JSON.stringify({ before, after }));
+  check("and it really was hiding some", filtered.shown < filtered.all,
+    JSON.stringify(filtered));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\ntapping a commander");
-await tab("commander");
 {
   await page.click('[data-history="Atraxa, Grand Unifier"]');
   await page.waitForFunction(() => !!document.querySelector(".card-peek .card-image"));

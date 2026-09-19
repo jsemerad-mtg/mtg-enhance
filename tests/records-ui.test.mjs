@@ -74,32 +74,45 @@ await page.waitForFunction(() => recordsState === "ready");
     !/Nobody, the Unplayed\s*[–\d]/.test(r), r.slice(0, 200));
 }
 
-console.log("\ngrouping by colours");
+console.log("\nnarrowing by colour");
 {
+  // There used to be a By colours tab here. It grouped decks into one row per
+  // colour combination, showed a win rate, and opened nothing — a colour has
+  // no history of its own, so the rows were a dead end. Colour is a filter on
+  // the one list now, and every row still opens.
   const r = await page.evaluate(() => {
     showScreen("stats");
     renderRecords();
-    document.querySelector('[data-view="identity"]').click();
     return {
-      view: recordsView,
-      text: document.querySelector("#records-list").textContent.replace(/\s+/g, " "),
+      // Scoped: [data-view] also names the opponents boxes/rows toggle on the
+      // game screen, which has nothing to do with this.
+      tabs: document.querySelectorAll("#records-list [data-view]").length,
+      chips: document.querySelectorAll("#records-list [data-cifilter]").length,
       tappable: document.querySelectorAll("[data-history]").length,
+      text: document.querySelector("#records-list").textContent.replace(/\s+/g, " "),
     };
   });
-  check("switches view", r.view === "identity");
-  check("shows colour names, not commander names",
-    /White · Blue · Black · Green/.test(r.text) && !/Atraxa/.test(r.text), r.text.slice(0, 160));
-  check("colour rows open nothing — a colour has no history of its own",
-    r.tappable === 0, String(r.tappable));
+  check("the tabs are gone", r.tabs === 0, String(r.tabs));
+  check("chips in their place", r.chips > 1, String(r.chips));
+  // Three, not two: the list merges the game log with saved decks, so a deck
+  // with no finished games has a row too.
+  check("every deck is listed and openable", r.tappable === 3, String(r.tappable));
+  check("by commander name, not colour name",
+    /Atraxa/.test(r.text) && !/White · Blue · Black · Green/.test(r.text), r.text.slice(0, 160));
 }
 {
   const r = await page.evaluate(() => {
-    document.querySelector('[data-view="commander"]').click();
-    return document.querySelectorAll("[data-history]").length;
+    document.querySelector('[data-cifilter="R"]')?.click();
+    return {
+      tappable: document.querySelectorAll("[data-history]").length,
+      names: [...document.querySelectorAll("[data-history]")].map((b) => b.dataset.history),
+    };
   });
-  // Three, not two: the list merges the game log with saved decks, so a deck
-  // with no finished games has a row too.
-  check("commander rows are tappable again", r === 3, String(r));
+  check("picking red narrows the list", r.tappable < 3, String(r.tappable));
+  check("to the red decks", r.names.every((n) => /Krenko/.test(n)), JSON.stringify(r.names));
+  // Filtering must never cost a row its history.
+  check("which still open", r.tappable > 0, String(r.tappable));
+  await page.evaluate(() => document.querySelector("[data-ciclear]")?.click());
 }
 
 console.log("\npast games for one commander");
