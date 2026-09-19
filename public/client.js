@@ -2010,6 +2010,12 @@ modalBody.addEventListener("click", (e) => {
   if (feed) { feed.innerHTML = oracleFeedHtml(); fillOracleCards(); }
 });
 
+// A file input fires both input and change per spec, but Safari has only ever
+// been reliable about change — so it is listened for there, not here.
+modalBody.addEventListener("change", (e) => {
+  if (e.target.id === "import-file") readImportFile(e.target);
+});
+
 modalBody.addEventListener("input", (e) => {
   if (e.target.id === "import-box") return renderImportPreview();
   if (e.target.id === "cmdr-search") return renderCommanderSearch(e.target.value);
@@ -3562,15 +3568,60 @@ const IMPORT_NOTE = {
 };
 
 function importDecksHtml() {
-  return `<p>Paste two columns from a spreadsheet: the commander and its decklist
-    link. Extra columns are ignored.</p>
+  // The old wording said "paste two columns", which sent people hunting for
+  // which two. Selecting the whole sheet is both easier and more reliable:
+  // a header row naming the columns is what lets the importer tell a deck's
+  // nickname from its commander.
+  return `<p>Paste a whole spreadsheet, header row and all — unknown columns are
+    ignored. Or just a commander and a decklist link.</p>
+    <p class="field-note">Reads <strong>Commander</strong>, <strong>Link</strong>
+      and <strong>Label</strong>. Two commanders in one cell:
+      <strong>A + B</strong>.</p>
     <label class="field">
       <span>Paste here</span>
       <textarea id="import-box" rows="4" spellcheck="false"
         placeholder="Krenko, Mob Boss\thttps://moxfield.com/decks/..."></textarea>
     </label>
+    <div class="import-file">
+      <input id="import-file" type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain" />
+      <label class="link-btn" for="import-file">or choose a .csv or .tsv file</label>
+    </div>
     <div id="import-preview"></div>
     <p id="import-error" class="field-note error" hidden></p>`;
+}
+
+// Reads a CSV or TSV straight into the box. Text only, deliberately: parsing
+// .xlsx in the browser means shipping a spreadsheet library to every player
+// for a screen almost nobody opens twice, and every spreadsheet app exports
+// CSV in two clicks.
+function readImportFile(input) {
+  const file = input.files?.[0];
+  const err = $("#import-error");
+  if (!file) return;
+  if (file.size > 2_000_000) {
+    err.textContent = "That file is bigger than a deck list should be — 2MB is the limit.";
+    err.hidden = false;
+    return;
+  }
+  if (/\.(xlsx|xls|numbers|ods)$/i.test(file.name)) {
+    err.textContent = "That's a spreadsheet file — export it as CSV first, or just copy the "
+      + "rows and paste them above.";
+    err.hidden = false;
+    return;
+  }
+  const reader = new FileReader();
+  reader.onerror = () => {
+    err.textContent = "Couldn't read that file.";
+    err.hidden = false;
+  };
+  reader.onload = () => {
+    err.hidden = true;
+    const box = $("#import-box");
+    if (!box) return;
+    box.value = String(reader.result || "").slice(0, 200_000);
+    renderImportPreview();
+  };
+  reader.readAsText(file);
 }
 
 function renderImportPreview() {
@@ -3620,25 +3671,43 @@ async function runImport(btn) {
 
   let done = 0;
   const failed = [];
+  // When something is wrong with the account or the database rather than with
+  // one deck, every row fails the same way. Sending a hundred more requests
+  // after the first few have all failed tells nobody anything and takes a
+  // minute to do it, so stop and say so.
+  const GIVE_UP_AFTER = 3;
+  let streak = 0;
+  let abandoned = 0;
+
   for (const row of rows) {
     btn.textContent = `Importing ${done + 1} of ${rows.length}…`;
     try {
       // A link that isn't http(s) is dropped rather than failing the row: the
       // deck is still worth having, and the preview already said so.
       await saveDeckRow(row.commander, row.identity, row.url || "");
+      streak = 0;
     } catch (e) {
       failed.push(`${row.commander}: ${e.message || e}`);
+      streak += 1;
     }
     done += 1;
+    if (streak >= GIVE_UP_AFTER && done < rows.length) {
+      abandoned = rows.length - done;
+      break;
+    }
   }
 
   await loadRecords();
   if (failed.length) {
     // Partial success is the honest report. The ones that landed stay landed.
-    err.textContent = `${rows.length - failed.length} imported, ${failed.length} failed — ${failed[0]}`;
+    const landed = done - failed.length;
+    err.textContent = abandoned
+      ? `Stopped after ${failed.length} in a row failed — ${abandoned} not attempted. `
+        + `${landed} imported. The first error was: ${failed[0]}`
+      : `${landed} imported, ${failed.length} failed — ${failed[0]}`;
     err.hidden = false;
     btn.disabled = false;
-    btn.textContent = "Try the rest again";
+    btn.textContent = abandoned ? "Try again" : "Try the rest again";
     return;
   }
   closeModal();

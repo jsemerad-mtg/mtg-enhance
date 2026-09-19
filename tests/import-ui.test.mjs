@@ -93,6 +93,27 @@ console.log("\nthe pricing sheet as it actually is");
     rows[1].commander === "Miirym, Sentinel Wyrm", rows[1].commander);
 }
 
+console.log("\na header row with columns the app has never heard of");
+{
+  // The review sheet has Colours and Check columns. Requiring every cell to be
+  // a name the app knows meant the header was read as a deck, and the whole
+  // import came in shifted by one row.
+  const rows = await parse(
+    "Deck\tCommander\tLink\tColours\tCheck\n" +
+    "Blue Green Kicker\tVerazol, the Split Current\thttps://www.mtggoldfish.com/deck/3496720\tUG\t\n" +
+    "Tier 1 5-Color EDH\tJodah, Archmage Eternal\thttps://www.mtggoldfish.com/deck/999\tWUBRG\t"
+  );
+  check("the header is still recognised", rows.length === 2, String(rows.length));
+  check("and its Commander column believed",
+    rows[0].commander === "Verazol, the Split Current", rows[0].commander);
+  check("on every row", rows[1].commander === "Jodah, Archmage Eternal", rows[1].commander);
+  check("with the link intact",
+    rows[0].url === "https://www.mtggoldfish.com/deck/3496720", rows[0].url);
+  // A colour code is not a price and not a name, so it must not become one.
+  check("the extra columns stay out of the way",
+    rows.every((r) => r.status === "ok"), rows.map((r) => r.status).join(","));
+}
+
 console.log("\nthe same sheet with its header row left behind");
 {
   // Pasting a selection rather than the whole sheet loses the header. Nothing

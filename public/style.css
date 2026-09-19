@@ -2367,7 +2367,10 @@ body::before {
   list-style: none;
   margin: 10px 0 8px;
   padding: 0;
-  max-height: 32vh;
+  /* Tuned against a 360x780 phone: the Import button has to stay above the
+     fold, and it is the only control the screen exists for. Every line added
+     to the explanation above comes out of this number. */
+  max-height: 26vh;
   overflow-y: auto;
 }
 
@@ -2452,4 +2455,31 @@ body::before {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The native file input is unstyleable across browsers, so the label is the
+   control and the input itself is hidden from sight but not from the
+   accessibility tree or the keyboard. */
+.import-file { margin: -2px 0 10px; }
+
+.import-file label {
+  display: inline-block;
+  cursor: pointer;
+}
+
+#import-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Keyboard users get the focus ring on the label, since that is what they see;
+   the input is still what receives focus, hence the sibling selector — which is
+   why the input is written BEFORE the label in the markup. */
+#import-file:focus-visible + label {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
 }

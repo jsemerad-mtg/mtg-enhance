@@ -18,6 +18,9 @@
 export const PAIR = " + ";
 export const NAME_MAX = 80;
 export const LABEL_MAX = 24;
+// 80 + " + " + 80 + " (" + 24 + ")" = 190. The seat field and every column that
+// stores a key allow 200, so a key can never be the thing that truncates.
+export const KEY_MAX = 200;
 
 const clean = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 

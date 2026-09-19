@@ -1,11 +1,27 @@
--- MTG Enhance — partner commanders and deck labels (Cloudflare D1)
+-- MTG Enhance — partner commanders and deck labels, STEP 1 of 2 (Cloudflare D1)
 --
 --   cd ~/Desktop/mtg-enhance-poc
 --   npx wrangler d1 execute mtg_oracle_db --remote --file=tools/partners-and-labels-schema.sql
+--   npm run deploy
+--   npx wrangler d1 execute mtg_oracle_db --remote --file=tools/partners-and-labels-finish.sql
 --
--- Safe to run more than once. Run it BEFORE deploying the Worker that uses
--- these columns: the new code writes commander2 and label on every deck save,
--- and a save against the old table fails outright.
+-- Expand, deploy, contract. This file only ADDS things, so the Worker that is
+-- already running keeps working while it applies; the second file removes the
+-- old index once the new Worker is live.
+--
+-- This was one file to begin with, and that was a mistake worth recording: it
+-- dropped `idx_decks_user_commander` in the same breath, and the deployed
+-- Worker's `ON CONFLICT(user_id, commander)` names that index by its columns.
+-- With the index gone and the new Worker not yet live, SQLite answered every
+-- deck insert with "ON CONFLICT clause does not match any PRIMARY KEY or
+-- UNIQUE constraint" — a 102-deck import failed 102 times in a row. Nothing
+-- was lost, but the window existed at all because a destructive step rode
+-- along with an additive one.
+--
+-- NOT safe to re-run: SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS,
+-- so a second run stops on "duplicate column name: commander2". Nothing is
+-- damaged — the batch aborts — and the CREATE INDEX below is IF NOT EXISTS, so
+-- it can be run on its own afterwards if you need to.
 --
 -- Two changes, one migration, because they widen the same key.
 --
@@ -32,12 +48,14 @@
 ALTER TABLE decks ADD COLUMN commander2 TEXT NOT NULL DEFAULT '';
 ALTER TABLE decks ADD COLUMN label      TEXT NOT NULL DEFAULT '';
 
--- The old index is a strict subset of the new one, so it is dropped rather
--- than left to enforce a rule the app no longer has.
-DROP INDEX IF EXISTS idx_decks_user_commander;
-
 CREATE UNIQUE INDEX IF NOT EXISTS idx_decks_user_deck
   ON decks (user_id, commander, commander2, label);
+
+-- The old index is deliberately LEFT IN PLACE here. It still backs the running
+-- Worker's ON CONFLICT, and while it exists a second deck for the same
+-- commander is refused — so labels do not actually work until step 2. That is
+-- the trade: a few minutes of the old behaviour instead of a few minutes of no
+-- behaviour at all.
 
 -- game_history deliberately gets NO new columns. It keys on `commander`, and
 -- that column now holds the deck's KEY (see src/deck-key.js) rather than a
