@@ -2533,3 +2533,27 @@ body::before {
 .ci-filter-actions { display: flex; gap: 12px; align-items: center; }
 .ci-filter-actions .link-btn { font-size: 0.78rem; }
 .ci-exact.is-on { color: var(--accent-bright, var(--accent)); }
+
+/* ---------- Open the decklist ---------- */
+
+/* Three buttons where there were two. Save keeps its weight; Copy and Open
+   share what's left and shrink rather than pushing the row off a 360px phone. */
+.manual-actions .btn-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.manual-actions .btn:has(.btn-icon) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+/* Below this the third button costs the other two their labels, so the icon
+   carries it alone — the title and aria-label already say what it does. */
+@media (max-width: 380px) {
+  .manual-actions .btn:has(.btn-icon) span { display: none; }
+  .manual-actions .btn:has(.btn-icon) { flex: 0 0 auto; padding-left: 14px; padding-right: 14px; }
+}

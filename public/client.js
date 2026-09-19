@@ -2017,6 +2017,18 @@ modalBody.addEventListener("change", (e) => {
 });
 
 modalBody.addEventListener("input", (e) => {
+  if (e.target.id === "deck-url") {
+    // Both buttons act on the field, so they have to track it. Copy used to
+    // be enabled from the SAVED row, which left it dead after pasting a link
+    // and before saving it.
+    const has = !!e.target.value.trim();
+    const openable = !!webLink(e.target.value);
+    const copyBtn = $("[data-deck-copy]");
+    const openBtn = $("[data-deck-open]");
+    if (copyBtn) copyBtn.disabled = !has;
+    if (openBtn) openBtn.disabled = !openable;
+    return;
+  }
   if (e.target.id === "import-box") return renderImportPreview();
   if (e.target.id === "cmdr-search") return renderCommanderSearch(e.target.value);
   if (e.target.id !== "oracle-question") return;
@@ -3280,10 +3292,29 @@ function recordsHtml() {
 }
 
 // ---------- decklist links ----------
+// http and https only, and the one place that decides so on the client. A
+// decklist link is shown to three other people and now also opened in a tab,
+// so "javascript:" and "data:" have to be refused in both paths by the same
+// rule rather than by two copies of it that can drift.
+function webLink(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  let parsed;
+  try { parsed = new URL(text); } catch { return ""; }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
+  return parsed.toString();
+}
+
+const EXTERNAL_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+  class="btn-icon"><path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/><path
+  d="M18 14.5V19a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4.5"/></svg>`;
+
 function deckLinkHtml(row) {
   const url = row.deck?.deck_url || "";
   return `<p>Paste a link to this deck — Moxfield, Archidekt, a Google Doc, anywhere.
-    It's stored as a link and nothing else; we never open or read it.</p>
+    It's stored as text and nothing else; our servers never fetch or read it.
+    Open just takes you there in a new tab.</p>
     <label class="field">
       <span>Decklist URL</span>
       <input id="deck-url" type="url" inputmode="url" maxlength="500" autocomplete="off"
@@ -3294,6 +3325,9 @@ function deckLinkHtml(row) {
     <div class="manual-actions">
       <button class="btn btn-primary" type="button" data-deck-save="${escapeHtml(row.commander)}">Save</button>
       <button class="btn btn-secondary" type="button" data-deck-copy="1"${url ? "" : " disabled"}>Copy</button>
+      <button class="btn btn-secondary" type="button" data-deck-open="1"${
+        webLink(url) ? "" : " disabled"} title="Open the decklist in a new tab"
+        aria-label="Open the decklist in a new tab">${EXTERNAL_ICON}<span>Open</span></button>
     </div>
     ${url ? `<div class="auth-links">
       <button class="link-btn" type="button" data-deck-clear="${escapeHtml(row.commander)}">Remove the link</button>
@@ -3312,16 +3346,12 @@ async function saveDeckLink(commander, rawUrl) {
   err.hidden = true;
 
   const url = rawUrl.trim();
-  if (url) {
-    // Checked here as well as at the server so a typo is answered instantly
-    // rather than after a round trip.
-    let parsed;
-    try { parsed = new URL(url); } catch { parsed = null; }
-    if (!parsed || (parsed.protocol !== "https:" && parsed.protocol !== "http:")) {
-      err.textContent = "That doesn't look like a web link — it should start with https://";
-      err.hidden = false;
-      return false;
-    }
+  // Checked here as well as at the server so a typo is answered instantly
+  // rather than after a round trip.
+  if (url && !webLink(url)) {
+    err.textContent = "That doesn't look like a web link — it should start with https://";
+    err.hidden = false;
+    return false;
   }
 
   const res = await fetch("/api/decks", {
@@ -4027,6 +4057,31 @@ modalBody.addEventListener("click", async (e) => {
   const clear = e.target.closest("[data-deck-clear]");
   if (clear) {
     if (await saveDeckLink(clear.dataset.deckClear, "")) closeModal();
+    return;
+  }
+
+  const open = e.target.closest("[data-deck-open]");
+  if (open) {
+    // Reads the field rather than the saved row, so a link you have just
+    // pasted can be checked before you commit it. Nothing has awaited yet in
+    // this handler, so the click is still a user gesture and a pop-up blocker
+    // leaves it alone.
+    const href = webLink($("#deck-url").value);
+    const err = $("#deck-error");
+    if (!href) {
+      err.textContent = "That doesn't look like a web link — it should start with https://";
+      err.hidden = false;
+      return;
+    }
+    err.hidden = true;
+    // noopener severs window.opener, so the page that opens can't reach back
+    // into this tab. noreferrer keeps the table's URL out of its logs.
+    const win = window.open(href, "_blank", "noopener,noreferrer");
+    if (!win) {
+      const note = $("#deck-note");
+      note.textContent = "Your browser blocked the new tab — copy the link and open it yourself.";
+      note.hidden = false;
+    }
     return;
   }
 
