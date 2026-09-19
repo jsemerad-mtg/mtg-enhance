@@ -155,7 +155,11 @@ await page.waitForFunction(() => recordsState === "ready");
   const r = await page.evaluate(() => ({
     actions: [...document.querySelectorAll(".records-actions .btn")].map((b) => b.textContent.trim()),
   }));
-  check("both ways in are offered", r.actions.length === 2, JSON.stringify(r.actions));
+  // Three ways to get decks in: one at a time, a game played elsewhere, or a
+  // whole sheet at once.
+  check("every way in is offered", r.actions.length === 3, JSON.stringify(r.actions));
+  check("including the bulk import", r.actions.some((a) => /Import a list/i.test(a)),
+    JSON.stringify(r.actions));
   check("adding a commander comes first", /add a commander/i.test(r.actions[0] || ""), r.actions[0]);
 }
 {

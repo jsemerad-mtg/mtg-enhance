@@ -2334,3 +2334,84 @@ body::before {
   font-size: 0.95rem;
   padding: 10px 12px;
 }
+
+/* ---------- Importing a list of decks ---------- */
+
+/* A textarea is the one field in the app people paste forty lines into, so it
+   gets a monospace face: a name that wrapped oddly is easier to spot when the
+   columns line up. */
+#import-box {
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  padding: 10px 12px;
+  resize: vertical;
+  /* Four lines is enough to see what you pasted. Any taller and the Import
+     button falls off the bottom of a phone, which is the one control the
+     screen exists for. */
+  max-height: 22vh;
+}
+
+#import-box:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Long lists are read, not scrolled past: cap the height and let the preview
+   scroll inside the modal rather than pushing the Import button off-screen.
+   Scoped to .modal-body because the generic `ul` rule there indents lists by
+   20px, which is right for prose and wrong for a table of rows. */
+.modal-body .import-list {
+  list-style: none;
+  margin: 10px 0 8px;
+  padding: 0;
+  max-height: 32vh;
+  overflow-y: auto;
+}
+
+/* Two lines every time: the name (with its pips) above, what will happen to it
+   below. Putting the note beside the name instead cost "Krenko, Mob Boss" two
+   thirds of its width at 360px — and a note allowed to wrap would make one row
+   taller than the rest, which reads as a broken list before anyone reads it. */
+.modal-body .import-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1px 8px;
+  align-items: center;
+  padding: 7px 10px;
+  margin: 0 0 4px;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+
+.import-name {
+  grid-column: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.84rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.import-row .suggestion-pips { grid-column: 2; grid-row: 1; }
+
+.import-row .field-note {
+  grid-column: 1 / -1;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Amber, not red: a flagged row is skipped or trimmed, never an error — the
+   import still runs and the rest still lands. */
+.import-row.is-flagged {
+  border-color: color-mix(in srgb, #e0a04a 45%, transparent);
+  background: color-mix(in srgb, #e0a04a 8%, var(--panel));
+}
+
+.import-row.is-flagged .field-note { color: #e8bd7a; }

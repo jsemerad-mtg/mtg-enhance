@@ -1875,6 +1875,7 @@ modalBody.addEventListener("click", (e) => {
 });
 
 modalBody.addEventListener("input", (e) => {
+  if (e.target.id === "import-box") return renderImportPreview();
   if (e.target.id === "cmdr-search") return renderCommanderSearch(e.target.value);
   if (e.target.id !== "oracle-question") return;
   const count = $("#oracle-count");
@@ -3014,6 +3015,8 @@ function recordsHtml() {
       data-records="addcmdr">Add a commander</button>
     <button class="btn btn-secondary btn-sm" type="button"
       data-records="add">Add a game played elsewhere</button>
+    <button class="btn btn-secondary btn-sm" type="button"
+      data-records="import">Import a list</button>
   </div>`;
 
   const rowData = commanderRows();
@@ -3217,6 +3220,233 @@ function historyHtml(games) {
     .join("")}</ul>`;
 }
 
+// ---------- importing a list of decks ----------
+// Built for one gesture: select two columns in a spreadsheet, copy, paste.
+// That arrives TAB-separated, which is why tabs are tried first and commas
+// only as a fallback — and the comma path has to handle quotes, because
+// "Krenko, Mob Boss" has a comma in it and a naive split would cut his name
+// in half.
+function splitCells(line) {
+  if (line.includes("\t")) return line.split("\t").map((c) => c.trim());
+  const out = [];
+  let cur = "";
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i += 1; }
+      else if (ch === '"') quoted = false;
+      else cur += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ",") { out.push(cur.trim()); cur = ""; }
+    else cur += ch;
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+const URLISH = /^https?:\/\/\S+$/i;
+// Something clearly meant as a link but missing its scheme. Worth telling
+// someone about rather than silently treating "www.moxfield.com/..." as the
+// name of a commander.
+const HALF_URL = /^(www\.|[a-z0-9-]+\.[a-z]{2,}\/)/i;
+const MONEY = /^[$£€]?[\d.,]+%?$/;
+const HEADERS = /^(commander|deck|deck name|name|url|link|decklist|price|value|cost|total|notes?)$/i;
+const CMDR_HEADER = /^commander$/i;
+const LINK_HEADER = /^(url|link|decklist|deck ?list ?url)$/i;
+
+// Column order is not assumed. A deck pricing sheet has price columns, the
+// link might be first or last, and — the case that actually bit — the first
+// text column is often the deck's nickname, not its commander. So: if the
+// sheet has a header row, believe it; otherwise keep every plausible cell as
+// a candidate and let resolveImportRow, which has the commander index, pick.
+function parseDeckLines(text) {
+  const rows = [];
+  const seen = new Set();
+  let cols = null;
+
+  for (const raw of String(text || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    // Indices matter once a header is in play, so the empties stay put here
+    // and only the heuristics work off the filled ones.
+    const cells = splitCells(line);
+    const filled = cells.filter(Boolean);
+    if (!filled.length) continue;
+
+    // A row whose every cell names a column is naming columns.
+    if (filled.every((c) => HEADERS.test(c))) {
+      const at = cells.findIndex((c) => CMDR_HEADER.test(c));
+      cols = at >= 0 ? { commander: at, url: cells.findIndex((c) => LINK_HEADER.test(c)) } : null;
+      continue;
+    }
+
+    const url = filled.find((c) => URLISH.test(c)) || "";
+    const halfUrl = !url && (filled.find((c) => HALF_URL.test(c)) || "");
+    const candidates = filled.filter(
+      (c) => c !== url && c !== halfUrl && !URLISH.test(c) && !MONEY.test(c)
+    );
+    // The header wins when there is one; otherwise the first plausible cell is
+    // the opening guess, which resolveImportRow may improve on.
+    const named = cols && cells[cols.commander];
+    const commander = (named || candidates[0] || "").trim();
+
+    if (!commander && !url && !halfUrl) continue;
+
+    const key = commander.toLowerCase();
+    let status = "ok";
+    if (!commander) status = "no-commander";
+    else if (seen.has(key)) status = "duplicate";
+    else if (halfUrl) status = "bad-url";
+    if (commander) seen.add(key);
+
+    rows.push({
+      commander,
+      url,
+      halfUrl: halfUrl || "",
+      // Empty when a header named the column: there is nothing left to guess.
+      candidates: named ? [] : candidates,
+      status,
+      line,
+    });
+  }
+  return rows;
+}
+
+// Resolution is separate from parsing so the parser stays pure and the index
+// can be missing without breaking the preview.
+function resolveImportRow(row) {
+  if (row.status === "no-commander") {
+    return { ...row, identity: "", known: false, existing: false };
+  }
+  const index = commanderIndexState === "ready" ? commanderIndex : null;
+  const find = (name) => index && index.find((c) => c.lower === name.toLowerCase());
+
+  let hit = find(row.commander);
+  // "Goblins | Krenko, Mob Boss | $412.55 | <link>" — the first text cell is
+  // the deck's nickname. If a later one is a commander the index knows and the
+  // first isn't, that one is the commander.
+  if (!hit) {
+    for (const cell of row.candidates || []) {
+      const alt = find(cell);
+      if (alt) { hit = alt; break; }
+    }
+  }
+  const name = hit ? hit.name : row.commander;
+  const existing = commanderRows().find((r) => r.commander.toLowerCase() === name.toLowerCase());
+  return {
+    ...row,
+    // The snapshot's spelling wins, so "krenko, mob boss" out of a spreadsheet
+    // lands as "Krenko, Mob Boss" and matches everything else in the app.
+    commander: name,
+    identity: hit ? hit.ci : existing?.identity || "",
+    known: !!hit,
+    existing: !!existing?.deck,
+  };
+}
+
+// The parser can only spot a repeat by the text on the line; once the index has
+// had its say, two differently-labelled rows can turn out to be the same deck.
+function resolveImportRows(rows) {
+  const seen = new Set();
+  return rows.map(resolveImportRow).map((r) => {
+    if (r.status === "no-commander") return r;
+    const key = r.commander.toLowerCase();
+    const dupe = seen.has(key);
+    seen.add(key);
+    return dupe ? { ...r, status: "duplicate" } : r;
+  });
+}
+
+const IMPORT_NOTE = {
+  "no-commander": "no commander name on this line",
+  duplicate: "listed more than once — only the first is used",
+  "bad-url": "the link needs to start with https://",
+};
+
+function importDecksHtml() {
+  return `<p>Paste two columns from a spreadsheet: the commander and its decklist
+    link. Extra columns are ignored.</p>
+    <label class="field">
+      <span>Paste here</span>
+      <textarea id="import-box" rows="4" spellcheck="false"
+        placeholder="Krenko, Mob Boss\thttps://moxfield.com/decks/..."></textarea>
+    </label>
+    <div id="import-preview"></div>
+    <p id="import-error" class="field-note error" hidden></p>`;
+}
+
+function renderImportPreview() {
+  const host = $("#import-preview");
+  if (!host) return;
+  const rows = resolveImportRows(parseDeckLines($("#import-box")?.value || ""));
+  if (!rows.length) {
+    host.innerHTML = `<p class="field-note">Nothing pasted yet.</p>`;
+    return;
+  }
+  const usable = rows.filter((r) => r.status === "ok" || r.status === "bad-url");
+  const added = usable.filter((r) => !r.existing).length;
+  const updated = usable.filter((r) => r.existing).length;
+  const unknown = usable.filter((r) => !r.known).length;
+
+  host.innerHTML = `
+    <ul class="import-list">${rows.map((r) => `
+      <li class="import-row${r.status === "ok" ? "" : " is-flagged"}">
+        <span class="import-name">${escapeHtml(r.commander || r.halfUrl || r.line)}</span>
+        ${r.status === "ok" || r.status === "bad-url" ? pipsHtml(r.identity) : ""}
+        <span class="field-note">${
+          IMPORT_NOTE[r.status]
+            || (r.existing ? "already yours — link updated"
+              : r.known ? (r.url ? "new" : "new, no link")
+              : "new, colours unknown")
+        }</span>
+      </li>`).join("")}</ul>
+    <p class="field-note">${added} to add${updated ? `, ${updated} to update` : ""}${
+      unknown ? `, ${unknown} not in the commander list` : ""}.</p>
+    <div class="manual-actions">
+      <button class="btn btn-primary" type="button" data-import="go"${usable.length ? "" : " disabled"}>
+        Import ${usable.length} deck${usable.length === 1 ? "" : "s"}</button>
+    </div>`;
+}
+
+// One POST per deck rather than a bulk endpoint: /api/decks already validates
+// the URL, carries the bracket forward and upserts, and all of that is already
+// tested. A list of forty takes a few seconds and reuses every guard.
+async function runImport(btn) {
+  const rows = resolveImportRows(parseDeckLines($("#import-box")?.value || ""))
+    .filter((r) => r.status === "ok" || r.status === "bad-url");
+  if (!rows.length) return;
+
+  const err = $("#import-error");
+  err.hidden = true;
+  btn.disabled = true;
+
+  let done = 0;
+  const failed = [];
+  for (const row of rows) {
+    btn.textContent = `Importing ${done + 1} of ${rows.length}…`;
+    try {
+      // A link that isn't http(s) is dropped rather than failing the row: the
+      // deck is still worth having, and the preview already said so.
+      await saveDeckRow(row.commander, row.identity, row.url || "");
+    } catch (e) {
+      failed.push(`${row.commander}: ${e.message || e}`);
+    }
+    done += 1;
+  }
+
+  await loadRecords();
+  if (failed.length) {
+    // Partial success is the honest report. The ones that landed stay landed.
+    err.textContent = `${rows.length - failed.length} imported, ${failed.length} failed — ${failed[0]}`;
+    err.hidden = false;
+    btn.disabled = false;
+    btn.textContent = "Try the rest again";
+    return;
+  }
+  closeModal();
+}
+
 // ---------- adding a commander ----------
 // Searching the same bundled snapshot the lobby autocompletes against, so this
 // costs no network and arrives with the colour identity already attached —
@@ -3269,7 +3499,7 @@ function renderCommanderSearch(query) {
 // The deck upsert replaces every column it is given, so an existing row's
 // bracket and decklist have to travel back with it. Adding a commander must
 // never be a quiet way to erase one.
-async function saveDeckRow(name, ci) {
+async function saveDeckRow(name, ci, deckUrl) {
   const existing = commanderRows().find((r) => r.commander.toLowerCase() === name.toLowerCase());
   const res = await fetch("/api/decks", {
     method: "POST",
@@ -3279,7 +3509,9 @@ async function saveDeckRow(name, ci) {
       commander: name,
       identity: existing?.identity || ci,
       bracket: existing?.deck?.bracket ?? null,
-      deckUrl: existing?.deck?.deck_url || "",
+      // Undefined means "leave it alone", which is what every caller but the
+      // importer wants. An empty string still means "no link".
+      deckUrl: deckUrl === undefined ? existing?.deck?.deck_url || "" : deckUrl,
     }),
   });
   const data = await res.json().catch(() => ({}));
@@ -3420,6 +3652,13 @@ $("#records-list").addEventListener("click", (e) => {
     drop.disabled = true;
     return dropDeck(drop.dataset.dropDeck, drop.dataset.dropName);
   }
+  if (e.target.closest('[data-records="import"]')) {
+    openModal("Import a list", importDecksHtml());
+    loadCommanderIndex().then(renderImportPreview);
+    renderImportPreview();
+    $("#import-box")?.focus();
+    return;
+  }
   if (e.target.closest('[data-records="addcmdr"]')) {
     openModal("Add a commander", addCommanderHtml());
     loadCommanderIndex();
@@ -3464,6 +3703,9 @@ modalBody.addEventListener("click", async (e) => {
     note.hidden = false;
     return;
   }
+
+  const imp = e.target.closest('[data-import="go"]');
+  if (imp) return runImport(imp);
 
   const addCmdr = e.target.closest("[data-add-cmdr]");
   if (addCmdr) {
