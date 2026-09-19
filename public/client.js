@@ -3274,14 +3274,19 @@ function parseDeckLines(text) {
     const filled = cells.filter(Boolean);
     if (!filled.length) continue;
 
-    // A row whose every cell names a column is naming columns.
-    if (filled.every((c) => HEADERS.test(c))) {
+    const url = filled.find((c) => URLISH.test(c)) || "";
+
+    // A header row names its columns. Requiring EVERY cell to be a name the
+    // app knows was too strict for a real sheet, which has a "Colours" or a
+    // "Check" column the app has never heard of — so a row with no link in it
+    // is a header if it says "Commander" anywhere, or if every cell is a name
+    // we do know.
+    if (!url && (cells.some((c) => CMDR_HEADER.test(c)) || filled.every((c) => HEADERS.test(c)))) {
       const at = cells.findIndex((c) => CMDR_HEADER.test(c));
       cols = at >= 0 ? { commander: at, url: cells.findIndex((c) => LINK_HEADER.test(c)) } : null;
       continue;
     }
 
-    const url = filled.find((c) => URLISH.test(c)) || "";
     const halfUrl = !url && (filled.find((c) => HALF_URL.test(c)) || "");
     const candidates = filled.filter(
       (c) => c !== url && c !== halfUrl && !URLISH.test(c) && !MONEY.test(c)
