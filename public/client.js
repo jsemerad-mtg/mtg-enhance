@@ -366,9 +366,13 @@ function render() {
   $("#self-panel").classList.toggle("eliminated-row", !!self.eliminated);
 
   const selfCommander = $("#self-commander");
-  selfCommander.textContent = self.commanderName || "";
-  selfCommander.hidden = !self.commanderName;
-  if (self.commanderName) selfCommander.dataset.commander = self.commanderName;
+  const myNames = commanderNamesOf(self);
+  // The label is deliberately left off the table: "Ezuri (Snakes)" is how the
+  // deck is filed, and at the table you are playing Ezuri.
+  selfCommander.textContent = myNames.join(DECK_PAIR);
+  selfCommander.hidden = myNames.length === 0;
+  // Tapping it opens the card. With two, the first — the menu offers both.
+  if (myNames.length) selfCommander.dataset.commander = myNames[0];
   // The mode now reads off the code label instead of a separate badge, and
   // it shows for everyone rather than only the host.
   $("#code-label").textContent = session.mode === "remote" ? "Remote game code" : "Local game code";
@@ -392,8 +396,10 @@ function render() {
         ? `<span class="muted-pip muted-by-me" title="You've muted their sounds">${SPEAKER_OFF}</span>`
         : "";
       const tableMarks = tableStateMarks(p.id);
-      const commander = p.commanderName
-        ? `<span class="opponent-commander" data-commander="${escapeHtml(p.commanderName)}">${escapeHtml(p.commanderName)}</span>`
+      const theirNames = commanderNamesOf(p);
+      const commander = theirNames.length
+        ? `<span class="opponent-commander" data-commander="${escapeHtml(theirNames[0])}">${
+            escapeHtml(theirNames.join(DECK_PAIR))}</span>`
         : "";
       // Two lines that each answer one question: who this is and how much life
       // they have, then what they're playing and in what colours. The pips used
@@ -502,6 +508,8 @@ function handleMessage(msg) {
         playerId: selfId,
         displayName: lobbyInfo.displayName ?? stored.displayName,
         commanderName: lobbyInfo.commanderName ?? stored.commanderName,
+        commanderName2: lobbyInfo.commanderName2 ?? stored.commanderName2 ?? "",
+        deckLabel: lobbyInfo.deckLabel ?? stored.deckLabel ?? "",
         colorIdentity: lobbyInfo.colorIdentity ?? stored.colorIdentity,
       });
       showScreen("game");
@@ -686,6 +694,8 @@ function connectAndJoin(joinCode, lobbyInfo) {
         playerId: stored.playerId || null,
         displayName: lobbyInfo.displayName ?? stored.displayName,
         commanderName: lobbyInfo.commanderName ?? stored.commanderName,
+        commanderName2: lobbyInfo.commanderName2 ?? stored.commanderName2 ?? "",
+        deckLabel: lobbyInfo.deckLabel ?? stored.deckLabel ?? "",
         colorIdentity: lobbyInfo.colorIdentity ?? stored.colorIdentity,
         // ?? not ||, deliberately: a bracket of null means "didn't say", and
         // || would silently swap that for the stored value from a previous
@@ -982,7 +992,10 @@ $("#input-commander").addEventListener("input", updateSitButton);
 $("#form-lobby").addEventListener("submit", (e) => {
   e.preventDefault();
   const displayName = $("#input-name").value.trim();
-  const commanderName = $("#input-commander").value.trim();
+  // Ordered before it leaves, so the pair is the same deck whichever box each
+  // card was typed into.
+  const [commanderName, commanderName2] = lobbyPair();
+  const deckLabel = pendingDeckLabel;
   const colorIdentity = Array.from(document.querySelectorAll(".color-toggle input:checked")).map((el) => el.value);
 
   const pin = $("#input-join-pin").value.trim();
@@ -993,7 +1006,8 @@ $("#form-lobby").addEventListener("submit", (e) => {
   }
   $("#lobby-error").hidden = true;
   showScreen("game");
-  connectAndJoin(pendingCode, { displayName, commanderName, colorIdentity, pin, bracket: bracketValue });
+  connectAndJoin(pendingCode, { displayName, commanderName, commanderName2, deckLabel,
+                                colorIdentity, pin, bracket: bracketValue });
 
   // Remember the deck for next time. Fire-and-forget on purpose: this is a
   // convenience, and nobody should be kept out of a game because a deck row
@@ -1005,6 +1019,8 @@ $("#form-lobby").addEventListener("submit", (e) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         commander: commanderName,
+        commander2: commanderName2,
+        label: deckLabel,
         identity: canonicalIdentity(colorIdentity.join("")),
         bracket: bracketValue,
       }),
@@ -1284,10 +1300,12 @@ function applyCommander(name, rawCi) {
   const ci = canonicalIdentity(rawCi);
   expectedCommanderName = name;
   expectedIdentity = ci;
-  commanderInput.value = name.slice(0, 40);
-  setColorIdentity(ci === "" ? [] : ci.split(""));
+  primaryIdentity = ci;
+  commanderInput.value = name.slice(0, DECK_NAME_MAX);
   setNote(`${identityLabel(ci)} — colors set from ${name}.`);
-  checkIdentityMismatch();
+  // Unions in the partner's colours when there is one; falls back to just
+  // these when there isn't.
+  applyPairIdentity();
   renderFavButton();
   // Setting .value in code fires no input event, so nothing else was telling
   // the sit-down button that a commander had arrived. Tapping a favorite left
@@ -1296,9 +1314,127 @@ function applyCommander(name, rawCi) {
   updateSitButton();
 }
 
+// ---------- the partner field ----------
+// A second commander is the exception, so the field is hidden until asked for:
+// an always-visible empty box makes every ordinary deck look half-filled.
+const partnerInput = $("#input-commander-2");
+const partnerList = $("#partner-suggestions");
+const partnerNote = $("#partner-note");
+const partnerWrap = $("#partner-wrap");
+let partnerCommanderName = null;
+// Set when a chip fills the lobby in, cleared when the commander is retyped.
+let pendingDeckLabel = "";
+let partnerIdentity = null;
+let primaryIdentity = null;
+
+function unionIdentity(a, b) {
+  const letters = new Set(`${a || ""}${b || ""}`.split(""));
+  return WUBRG.filter((c) => letters.has(c)).join("");
+}
+
+// A deck's colour identity is the union of its commanders', so the toggles are
+// set from both. Only one of the two may be resolved yet, which is why the
+// null case is "leave the toggles alone" rather than "clear them".
+function applyPairIdentity() {
+  if (primaryIdentity === null && partnerIdentity === null) return;
+  const ci = unionIdentity(primaryIdentity ?? "", partnerIdentity ?? "");
+  expectedIdentity = ci;
+  setColorIdentity(ci === "" ? [] : ci.split(""));
+  checkIdentityMismatch();
+}
+
+function setPartnerNote(text, warn = false) {
+  partnerNote.textContent = text || "";
+  partnerNote.classList.toggle("warn", warn);
+  partnerNote.hidden = !text;
+}
+
+function applyPartner(name, rawCi) {
+  partnerCommanderName = name;
+  partnerIdentity = canonicalIdentity(rawCi);
+  partnerInput.value = name.slice(0, DECK_NAME_MAX);
+  closePartnerSuggestions();
+  setPartnerNote(`${identityLabel(partnerIdentity)} — added to your colors.`);
+  applyPairIdentity();
+  updateSitButton();
+}
+
+function closePartnerSuggestions() {
+  partnerList.hidden = true;
+  partnerList.innerHTML = "";
+  partnerInput.setAttribute("aria-expanded", "false");
+}
+
+function showPartnerField(on) {
+  partnerWrap.hidden = !on;
+  $("#btn-add-partner").hidden = on;
+  if (!on) {
+    partnerInput.value = "";
+    partnerCommanderName = null;
+    partnerIdentity = null;
+    setPartnerNote("");
+    closePartnerSuggestions();
+    // Dropping the partner drops its colours with it, or the deck keeps
+    // pips for a card that is no longer in it.
+    applyPairIdentity();
+  } else {
+    loadCommanderIndex();
+    partnerInput.focus();
+  }
+  updateSitButton();
+}
+
+$("#btn-add-partner").addEventListener("click", () => showPartnerField(true));
+$("#btn-remove-partner").addEventListener("click", () => showPartnerField(false));
+
+partnerInput.addEventListener("input", async () => {
+  const typed = partnerInput.value.trim();
+  if (typed !== partnerCommanderName) {
+    partnerCommanderName = null;
+    partnerIdentity = null;
+    setPartnerNote("");
+    applyPairIdentity();
+  }
+  updateSitButton();
+  if (typed.length < 2) return closePartnerSuggestions();
+  await loadCommanderIndex();
+  if (commanderIndexState !== "ready") return closePartnerSuggestions();
+  const hits = searchCommanders(typed);
+  if (!hits.length) return closePartnerSuggestions();
+  partnerList.innerHTML = hits
+    .map((e, i) => `<li role="option" data-partner-index="${i}" aria-selected="false">` +
+      `<span class="suggestion-name">${escapeHtml(e.name)}</span>${pipsHtml(e.ci)}</li>`)
+    .join("");
+  partnerSuggestions = hits;
+  partnerList.hidden = false;
+  partnerInput.setAttribute("aria-expanded", "true");
+});
+
+let partnerSuggestions = [];
+partnerList.addEventListener("mousedown", (e) => {
+  // mousedown, not click: blur would close the list before the click landed.
+  const li = e.target.closest("[data-partner-index]");
+  if (!li) return;
+  e.preventDefault();
+  const hit = partnerSuggestions[Number(li.dataset.partnerIndex)];
+  if (hit) applyPartner(hit.name, hit.ci);
+});
+partnerInput.addEventListener("blur", () => setTimeout(closePartnerSuggestions, 120));
+
+// What the lobby will sit down with. Trimmed and ordered exactly the way the
+// Worker will order it, so the deck the table shows is the deck that is saved.
+function lobbyPair() {
+  const typed = tidyName(partnerInput.value);
+  return orderPair(tidyName(commanderInput.value), partnerWrap.hidden ? "" : typed);
+}
+
 function clearCommanderResolution() {
   expectedIdentity = null;
   expectedCommanderName = null;
+  primaryIdentity = null;
+  // The label belonged to the deck that was filled in, not to whatever is
+  // being typed now.
+  pendingDeckLabel = "";
   setNote("");
   identityWarning.hidden = true;
   renderFavButton();
@@ -2230,14 +2366,16 @@ $("#btn-undo-life").addEventListener("click", () => {
 // browser reaches three other people's screens.
 async function shareMyDeck(btn) {
   const self = session.players[selfId];
-  if (!self?.commanderName || !code) return;
+  if (!seatDeckKey(self) || !code) return;
   btn.disabled = true;
   try {
     const res = await fetch("/api/decks/share", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, commander: self.commanderName, playerId: selfId }),
+      // The deck's key, so the Worker finds exactly one row even for a
+      // partner deck or a second build of the same commander.
+      body: JSON.stringify({ code, commander: seatDeckKey(self), playerId: selfId }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -2485,15 +2623,20 @@ function openPlayerMenu(playerId) {
     ? ""
     : `<p class="menu-note">Poke unlocks once it's their turn and they've had it a minute.</p>`;
   const self = session.players[selfId];
-  const dealt = commanderDamageOf(self)[playerId] ?? 0;
-  const damageRow = stepperRow({
-    label: `${player.displayName}'s commander → you`,
-    sub: dealt >= COMMANDER_DAMAGE_LETHAL ? "lethal" : `${COMMANDER_DAMAGE_LETHAL - dealt} to go`,
-    value: dealt,
-    action: "cmdr",
-    id: playerId,
-    lethal: dealt >= COMMANDER_DAMAGE_LETHAL,
-  });
+  const theirs = commanderNamesOf(player);
+  const damageRow = (theirs.length > 1 ? [0, 1] : [0]).map((slot) => {
+    const dealt = damageFrom(self, playerId, slot);
+    return stepperRow({
+      label: theirs.length > 1
+        ? `${theirs[slot]} → you`
+        : `${player.displayName}'s commander → you`,
+      sub: dealt >= COMMANDER_DAMAGE_LETHAL ? "lethal" : `${COMMANDER_DAMAGE_LETHAL - dealt} to go`,
+      value: dealt,
+      action: "cmdr",
+      id: damageKey(playerId, slot),
+      lethal: dealt >= COMMANDER_DAMAGE_LETHAL,
+    });
+  }).join("");
 
   openModal(
     player.displayName,
@@ -2501,7 +2644,11 @@ function openPlayerMenu(playerId) {
     <div class="player-menu">
       <button class="btn btn-secondary" type="button" data-menu="taunt">Taunt</button>
       <button class="btn btn-secondary" type="button" data-menu="poke"${canPoke ? "" : " disabled"}>Poke</button>
-      <button class="btn btn-secondary" type="button" data-menu="view"${player.commanderName ? "" : " disabled"}>View commander</button>
+      ${theirs.length > 1
+        ? theirs.map((n, i) => `<button class="btn btn-secondary" type="button"
+            data-menu="view" data-slot="${i}">View ${escapeHtml(n.split(",")[0].split(" // ")[0])}</button>`).join("")
+        : `<button class="btn btn-secondary" type="button" data-menu="view"${
+            player.commanderName ? "" : " disabled"}>View commander</button>`}
       <button class="btn btn-secondary" type="button" data-menu="mute">
         ${playerMuted(playerId) ? "Unmute their sounds" : "Mute their sounds"}
       </button>
@@ -2521,11 +2668,17 @@ function openPlayerMenu(playerId) {
 }
 
 modalBody.addEventListener("click", (e) => {
-  const action = e.target.closest("[data-menu]")?.dataset.menu;
+  const menuBtn = e.target.closest("[data-menu]");
+  const action = menuBtn?.dataset.menu;
   if (!action) return;
   const player = session.players[menuTargetId];
   if (action === "close" || !player) return closeModal();
-  if (action === "view") return openCardModal(player.commanderName);
+  if (action === "view") {
+    // Which of their commanders was tapped. One-commander seats carry no slot
+    // and land on the only card there is.
+    const names = commanderNamesOf(player);
+    return openCardModal(names[Number(menuBtn.dataset.slot) || 0] || names[0]);
+  }
   if (action === "mute") {
     toggleMutePlayer(menuTargetId);
     // Reopened rather than closed: muting someone mid-game is usually followed
@@ -2949,11 +3102,14 @@ function commanderRows() {
     });
   }
   for (const d of decks) {
-    const key = d.commander.toLowerCase();
+    // game_history stores the deck's key, so a deck row has to be reduced to
+    // the same string or a partner deck's games would never find their deck.
+    const name = deckKey(d.commander, d.commander2, d.label);
+    const key = name.toLowerCase();
     const row = byName.get(key);
     if (row) { row.deck = d; if (!row.identity) row.identity = d.identity || ""; }
     else byName.set(key, {
-      commander: d.commander, identity: d.identity || "",
+      commander: name, identity: d.identity || "",
       wins: 0, losses: 0, deck: d,
     });
   }
@@ -3251,9 +3407,10 @@ const URLISH = /^https?:\/\/\S+$/i;
 // name of a commander.
 const HALF_URL = /^(www\.|[a-z0-9-]+\.[a-z]{2,}\/)/i;
 const MONEY = /^[$£€]?[\d.,]+%?$/;
-const HEADERS = /^(commander|deck|deck name|name|url|link|decklist|price|value|cost|total|notes?)$/i;
+const HEADERS = /^(commander|deck|deck name|name|url|link|decklist|price|value|cost|total|notes?|label|colou?rs?|identity|check)$/i;
 const CMDR_HEADER = /^commander$/i;
 const LINK_HEADER = /^(url|link|decklist|deck ?list ?url)$/i;
+const LABEL_HEADER = /^(label|variant|build|version)$/i;
 
 // Column order is not assumed. A deck pricing sheet has price columns, the
 // link might be first or last, and — the case that actually bit — the first
@@ -3283,7 +3440,11 @@ function parseDeckLines(text) {
     // we do know.
     if (!url && (cells.some((c) => CMDR_HEADER.test(c)) || filled.every((c) => HEADERS.test(c)))) {
       const at = cells.findIndex((c) => CMDR_HEADER.test(c));
-      cols = at >= 0 ? { commander: at, url: cells.findIndex((c) => LINK_HEADER.test(c)) } : null;
+      cols = at >= 0
+        ? { commander: at,
+            url: cells.findIndex((c) => LINK_HEADER.test(c)),
+            label: cells.findIndex((c) => LABEL_HEADER.test(c)) }
+        : null;
       continue;
     }
 
@@ -3298,7 +3459,11 @@ function parseDeckLines(text) {
 
     if (!commander && !url && !halfUrl) continue;
 
-    const key = commander.toLowerCase();
+    const label = (cols && cols.label >= 0 && cells[cols.label]) ? cells[cols.label].trim() : "";
+    // The label is part of what makes a deck distinct, so two Ezuri rows
+    // labelled Snakes and Counters are two decks and not a repeat. Without it
+    // here, the second was flagged duplicate before its label was ever read.
+    const key = `${commander}|${label}`.toLowerCase();
     let status = "ok";
     if (!commander) status = "no-commander";
     else if (seen.has(key)) status = "duplicate";
@@ -3307,6 +3472,9 @@ function parseDeckLines(text) {
 
     rows.push({
       commander,
+      // Only from a named column: guessing which loose cell is a label would
+      // turn every deck nickname into one.
+      label,
       url,
       halfUrl: halfUrl || "",
       // Empty when a header named the column: there is nothing left to guess.
@@ -3325,27 +3493,51 @@ function resolveImportRow(row) {
     return { ...row, identity: "", known: false, existing: false };
   }
   const index = commanderIndexState === "ready" ? commanderIndex : null;
-  const find = (name) => index && index.find((c) => c.lower === name.toLowerCase());
+  const find = (name) => index && index.find((c) => c.lower === tidyName(name).toLowerCase());
+
+  // A pair, written either way people write it. The WHOLE string is tried
+  // first, because 141 legal commanders are double-faced cards whose own name
+  // contains " // " — splitting first would cut one card into two.
+  const splitPair = (text) => {
+    if (find(text)) return null;
+    for (const sep of [" + ", " // ", " / ", " & "]) {
+      const at = text.indexOf(sep);
+      if (at === -1) continue;
+      const a = find(text.slice(0, at));
+      const b = find(text.slice(at + sep.length));
+      if (a && b) return [a, b];
+    }
+    return null;
+  };
 
   let hit = find(row.commander);
+  let pair = hit ? null : splitPair(row.commander);
   // "Goblins | Krenko, Mob Boss | $412.55 | <link>" — the first text cell is
   // the deck's nickname. If a later one is a commander the index knows and the
   // first isn't, that one is the commander.
-  if (!hit) {
+  if (!hit && !pair) {
     for (const cell of row.candidates || []) {
       const alt = find(cell);
       if (alt) { hit = alt; break; }
+      const alts = splitPair(cell);
+      if (alts) { pair = alts; break; }
     }
   }
-  const name = hit ? hit.name : row.commander;
-  const existing = commanderRows().find((r) => r.commander.toLowerCase() === name.toLowerCase());
+
+  // The snapshot's spelling wins, so "krenko, mob boss" out of a spreadsheet
+  // lands as "Krenko, Mob Boss" and matches everything else in the app.
+  const names = pair ? pair.map((c) => c.name) : [hit ? hit.name : row.commander];
+  const identity = pair
+    ? unionIdentity(pair[0].ci, pair[1].ci)
+    : (hit ? hit.ci : "");
+  const key = deckKey(names[0], names[1] || "", row.label);
+  const existing = commanderRows().find((r) => r.commander.toLowerCase() === key.toLowerCase());
   return {
     ...row,
-    // The snapshot's spelling wins, so "krenko, mob boss" out of a spreadsheet
-    // lands as "Krenko, Mob Boss" and matches everything else in the app.
-    commander: name,
-    identity: hit ? hit.ci : existing?.identity || "",
-    known: !!hit,
+    commander: key,
+    pair: !!pair,
+    identity: identity || existing?.identity || "",
+    known: !!hit || !!pair,
     existing: !!existing?.deck,
   };
 }
@@ -3402,7 +3594,7 @@ function renderImportPreview() {
         <span class="field-note">${
           IMPORT_NOTE[r.status]
             || (r.existing ? "already yours — link updated"
-              : r.known ? (r.url ? "new" : "new, no link")
+              : r.known ? (r.pair ? "new, two commanders" : r.url ? "new" : "new, no link")
               : "new, colours unknown")
         }</span>
       </li>`).join("")}</ul>
@@ -3504,14 +3696,18 @@ function renderCommanderSearch(query) {
 // The deck upsert replaces every column it is given, so an existing row's
 // bracket and decklist have to travel back with it. Adding a commander must
 // never be a quiet way to erase one.
+// `name` is a deck KEY: one commander, or a pair, with or without a label.
 async function saveDeckRow(name, ci, deckUrl) {
   const existing = commanderRows().find((r) => r.commander.toLowerCase() === name.toLowerCase());
+  const { commander, commander2, label } = parseDeckKey(name);
   const res = await fetch("/api/decks", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      commander: name,
+      commander,
+      commander2,
+      label,
       identity: existing?.identity || ci,
       bracket: existing?.deck?.bracket ?? null,
       // Undefined means "leave it alone", which is what every caller but the
@@ -3772,7 +3968,10 @@ function tableCommanders() {
   for (const d of decks) {
     if (!d.commander) continue;
     const ci = d.identity === "C" ? "" : d.identity || "";
-    out.set(d.commander.toLowerCase(), `${d.commander}|${ci}`);
+    // The chip carries the deck's key, so tapping it fills in both commanders
+    // and the label — not just whichever card happens to be first.
+    const name = deckKey(d.commander, d.commander2, d.label);
+    out.set(name.toLowerCase(), `${name}|${ci}`);
   }
   for (const entry of favorites) {
     const key = splitFavorite(entry)[0].toLowerCase();
@@ -3816,12 +4015,34 @@ $("#favorites-list").addEventListener("click", (e) => {
   const chip = e.target.closest("[data-preselect]");
   if (!chip) return;
   const [name, ci] = splitFavorite(chip.dataset.preselect);
-  applyCommander(name, ci);
+  applyDeck(name, ci);
   chip.classList.add("chosen");
   $("#favorites-list").querySelectorAll(".fav-chip").forEach((c) => {
     if (c !== chip) c.classList.remove("chosen");
   });
 });
+
+// A chip holds a whole deck, which may be two commanders and a label. Fill in
+// everything it knows rather than only the first card, or sitting down with a
+// partner deck would silently drop its partner.
+function applyDeck(key, ci) {
+  const { commander, commander2, label } = parseDeckKey(key);
+  pendingDeckLabel = label;
+  applyCommander(commander, ci);
+  if (commander2) {
+    showPartnerField(true);
+    // The pair's identity is already on the chip; the halves aren't, so the
+    // toggles stay as the chip set them rather than being recomputed from a
+    // card we haven't resolved.
+    partnerCommanderName = commander2;
+    partnerInput.value = commander2;
+    setPartnerNote(label ? `Partner — this deck is labelled "${label}".` : "Partner.");
+    updateSitButton();
+  } else {
+    showPartnerField(false);
+    setColorIdentity(canonicalIdentity(ci) === "" ? [] : canonicalIdentity(ci).split(""));
+  }
+}
 
 // One list, two places to edit it: the star here and the × under My Commanders
 // do the same thing to the same row.
@@ -3840,10 +4061,14 @@ function renderFavButton() {
   const btn = $("#btn-fav-commander");
   if (!btn) return;
   const resolved = expectedCommanderName && expectedIdentity !== null;
+  // The star is about the DECK, so a pair stars as a pair — built from the
+  // RESOLVED names rather than the raw fields, since what is saved should be
+  // the card's own spelling and not whatever was half-typed.
+  const starName = deckKey(expectedCommanderName, partnerCommanderName || "", pendingDeckLabel);
   btn.hidden = !(resolved && signedIn());
   if (btn.hidden) return;
-  const entry = `${expectedCommanderName}|${expectedIdentity}`;
-  btn.textContent = isSaved(expectedCommanderName, entry)
+  const entry = `${starName}|${expectedIdentity}`;
+  btn.textContent = isSaved(starName, entry)
     ? "★ Saved to favorites"
     : "☆ Save to favorites";
   btn.dataset.entry = entry;
@@ -4027,12 +4252,80 @@ $("#input-join-pin").addEventListener("input", (e) => {
 const COMMANDER_DAMAGE_LETHAL = 21;
 const POISON_LETHAL = 10;
 
+// ---------- the deck key ----------
+// Mirrors src/deck-key.js, which the Worker and the Durable Object import.
+// client.js is a classic script and cannot import, so this is a deliberate
+// copy; tests/partner-ui.test.mjs runs the same cases through both and fails
+// if they ever disagree.
+//
+// " + " and not " // ": 141 legal commanders are double-faced cards whose own
+// name contains " // ", so it cannot also mean "and".
+const DECK_PAIR = " + ";
+const DECK_NAME_MAX = 80;
+const DECK_LABEL_MAX = 24;
+
+const tidyName = (x) => String(x ?? "").replace(/\s+/g, " ").trim();
+
+function orderPair(a, b) {
+  const x = tidyName(a).slice(0, DECK_NAME_MAX);
+  const y = tidyName(b).slice(0, DECK_NAME_MAX);
+  if (!x) return [y, ""];
+  if (!y) return [x, ""];
+  if (x.toLowerCase() === y.toLowerCase()) return [x, ""];
+  return x.toLowerCase() < y.toLowerCase() ? [x, y] : [y, x];
+}
+
+function deckKey(commander, commander2 = "", label = "") {
+  const [first, second] = orderPair(commander, commander2);
+  if (!first) return "";
+  const names = second ? first + DECK_PAIR + second : first;
+  const tag = tidyName(label).slice(0, DECK_LABEL_MAX);
+  return tag ? `${names} (${tag})` : names;
+}
+
+function parseDeckKey(key) {
+  let rest = tidyName(key);
+  let label = "";
+  const m = rest.match(/^(.*\S)\s\(([^()]*)\)$/);
+  if (m) { rest = m[1]; label = m[2]; }
+  const at = rest.indexOf(DECK_PAIR);
+  return at === -1
+    ? { commander: rest, commander2: "", label }
+    : { commander: rest.slice(0, at), commander2: rest.slice(at + DECK_PAIR.length), label };
+}
+
+// The one or two cards at a seat, in slot order. Slot is what commander damage
+// and commander tax are keyed by, so the order here is load-bearing.
+function commanderNamesOf(player) {
+  return [player?.commanderName, player?.commanderName2].map(tidyName).filter(Boolean);
+}
+
+function seatDeckKey(player) {
+  return deckKey(player?.commanderName, player?.commanderName2, player?.deckLabel);
+}
+
+// ---------- commander damage ----------
+// Mirrors src/commander-damage.js. Buckets are keyed by the commander CARD,
+// not the player: 21 is the threshold for one commander, and a player may have
+// two, so eleven from each partner is two clocks of eleven and not lethal.
+function damageKey(sourceId, slot) {
+  return `${sourceId}:${slot === 1 || slot === "1" ? 1 : 0}`;
+}
+
 function commanderDamageOf(player) {
   return player?.commanderDamage || {};
 }
 
+function damageFrom(player, sourceId, slot) {
+  const d = commanderDamageOf(player);
+  if (slot === undefined) {
+    return (d[damageKey(sourceId, 0)] ?? 0) + (d[damageKey(sourceId, 1)] ?? 0);
+  }
+  return d[damageKey(sourceId, slot)] ?? 0;
+}
+
 function worstCommanderDamage(player) {
-  const values = Object.values(commanderDamageOf(player));
+  const values = Object.values(commanderDamageOf(player)).filter((n) => typeof n === "number");
   return values.length ? Math.max(...values) : 0;
 }
 
@@ -4052,8 +4345,22 @@ function chipClass(value, lethal) {
 // Commander tax is twice the number of times it has been cast from the
 // command zone. The chip shows the cost, not the count, because the cost is
 // the number you need when you're deciding whether you can afford it.
-function commanderTax(player) {
-  return (player?.commanderCasts ?? 0) * 2;
+function commanderCastsOf(player, slot = 0) {
+  const casts = player?.commanderCasts;
+  // A session that was running when partners shipped still holds a number.
+  if (typeof casts === "number") return slot === 0 ? casts : 0;
+  return casts?.[slot] ?? 0;
+}
+
+function commanderTax(player, slot = 0) {
+  return commanderCastsOf(player, slot) * 2;
+}
+
+// What the chip shows for a player with two commanders: the more expensive of
+// the two, since that is the one that decides whether you can afford to go
+// again this turn.
+function worstCommanderTax(player) {
+  return Math.max(commanderTax(player, 0), commanderTax(player, 1));
 }
 
 // Your own saved decklist for the commander you actually sat down with. The
@@ -4061,9 +4368,11 @@ function commanderTax(player) {
 // button; the Worker reads the URL out of your deck row.
 function myDeckUrl() {
   const self = session.players[selfId];
-  const name = self?.commanderName;
-  if (!name || !signedIn()) return "";
-  const row = decks.find((d) => String(d.commander).toLowerCase() === name.toLowerCase());
+  const key = seatDeckKey(self);
+  if (!key || !signedIn()) return "";
+  const row = decks.find(
+    (d) => deckKey(d.commander, d.commander2, d.label).toLowerCase() === key.toLowerCase()
+  );
   return row?.deck_url || "";
 }
 
@@ -4096,7 +4405,7 @@ function renderCounterChips() {
        aria-label="Counters and table states" title="Counters and table states">
        <span class="chip-icon">${CHIP_ICONS.more}</span></button>`,
     chip("poison", "Poison counters", poison, chipClass(poison, POISON_LETHAL)),
-    chip("tax", "Commander tax", commanderTax(self)),
+    chip("tax", "Commander tax", worstCommanderTax(self)),
   ];
   if (worst > 0) {
     chips.push(chip("cmdr", "Commander damage taken", worst, chipClass(worst, COMMANDER_DAMAGE_LETHAL)));
@@ -4155,16 +4464,27 @@ function countersHtml() {
     ? `<p class="lethal-banner">That's lethal — ${listPhrase(reasons)}.</p>`
     : "";
 
+  // One row per opposing COMMANDER, not per opposing player. A player with a
+  // partner pair gets two rows and two separate clocks; everyone else is
+  // unchanged, which is why an ordinary table looks exactly as it did.
   const opponents = Object.values(session.players).filter((p) => p.id !== selfId);
-  const rows = opponents.map((p) => {
-    const value = damage[p.id] ?? 0;
-    return stepperRow({
-      label: `${p.displayName}'s commander`,
-      sub: value >= COMMANDER_DAMAGE_LETHAL ? "lethal" : `${COMMANDER_DAMAGE_LETHAL - value} to go`,
-      value,
-      action: "cmdr",
-      id: p.id,
-      lethal: value >= COMMANDER_DAMAGE_LETHAL,
+  const rows = opponents.flatMap((p) => {
+    const names = commanderNamesOf(p);
+    const slots = names.length > 1 ? [0, 1] : [0];
+    return slots.map((slot) => {
+      const value = damage[damageKey(p.id, slot)] ?? 0;
+      const togo = value >= COMMANDER_DAMAGE_LETHAL ? "lethal" : `${COMMANDER_DAMAGE_LETHAL - value} to go`;
+      return stepperRow({
+        // The commander's name alone on the label line, with the player in the
+        // sub. "Sam: Pir, Imaginative Rascal" wrapped to two lines on a phone
+        // and made every partnered row taller than the rest.
+        label: names.length > 1 ? names[slot] : `${p.displayName}'s commander`,
+        sub: names.length > 1 ? `${p.displayName} — ${togo}` : togo,
+        value,
+        action: "cmdr",
+        id: damageKey(p.id, slot),
+        lethal: value >= COMMANDER_DAMAGE_LETHAL,
+      });
     });
   });
 
@@ -4178,13 +4498,16 @@ function countersHtml() {
       id: selfId,
       lethal: poison >= POISON_LETHAL,
     })}
-    ${stepperRow({
-      label: "Commander tax",
-      sub: `cast ${self.commanderCasts ?? 0}\u00d7 \u2014 costs ${commanderTax(self)} more`,
-      value: commanderTax(self),
+    ${(commanderNamesOf(self).length > 1 ? [0, 1] : [0]).map((slot) => stepperRow({
+      label: commanderNamesOf(self).length > 1
+        ? `Tax — ${commanderNamesOf(self)[slot]}`
+        : "Commander tax",
+      // Each commander is taxed on its own casts, never on its partner's.
+      sub: `cast ${commanderCastsOf(self, slot)}\u00d7 \u2014 costs ${commanderTax(self, slot)} more`,
+      value: commanderTax(self, slot),
       action: "casts",
-      id: selfId,
-    })}
+      id: String(slot),
+    })).join("")}
 
     <h3>Table</h3>
     <div class="table-state-row">
@@ -4221,14 +4544,18 @@ modalBody.addEventListener("click", (e) => {
   const delta = Number(btn.dataset.delta);
   if (btn.dataset.step === "casts") {
     // The stepper shows the cost but moves by one cast, so it steps in twos.
-    sendMessage({ type: "commander_casts", targetPlayerId: selfId, delta });
+    sendMessage({ type: "commander_casts", targetPlayerId: selfId,
+                  slot: Number(btn.dataset.id) === 1 ? 1 : 0, delta });
   } else if (btn.dataset.step === "poison") {
     sendMessage({ type: "poison", targetPlayerId: selfId, delta });
   } else {
     // Damage is always recorded on yourself, from the opponent whose
     // commander dealt it — the same direction a player tracks it physically.
+    // The id carries which of their commanders it was.
     ensureAudio();
-    sendMessage({ type: "commander_damage", targetPlayerId: selfId, sourcePlayerId: btn.dataset.id, delta });
+    const [sourcePlayerId, slot] = String(btn.dataset.id).split(":");
+    sendMessage({ type: "commander_damage", targetPlayerId: selfId,
+                  sourcePlayerId, sourceSlot: Number(slot) === 1 ? 1 : 0, delta });
   }
   // No optimistic redraw here: refreshOpenModal() runs off the state_sync the
   // server sends back, so rapid taps can't show a number the server hasn't

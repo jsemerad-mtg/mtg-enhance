@@ -2415,3 +2415,41 @@ body::before {
 }
 
 .import-row.is-flagged .field-note { color: #e8bd7a; }
+
+/* ---------- A second commander ---------- */
+
+/* Most decks have one commander, so the field is a button until asked for.
+   An always-visible empty box makes every ordinary deck look half-filled. */
+.partner-field { margin-top: -4px; }
+
+#partner-wrap > label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+#btn-remove-partner { margin-top: 4px; font-size: 0.78rem; }
+
+/* Two commanders on one line. .opponent-commander already truncates; this is
+   the same treatment for your own seat, so a pair can't be the thing that
+   makes the self panel two lines tall on a phone. */
+.self-commander {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A stepper row per COMMANDER means the label is now a card name rather than
+   "Sam's commander", and card names are long: "Pir, Imaginative Rascal" wrapped
+   at 390px and made a partnered opponent's rows taller than everyone else's.
+   Both lines truncate rather than wrap, so the list stays a list. The sub is a
+   block inside the label, so it needs the rule too — an ellipsis on the parent
+   does not reach into a block child. */
+.stepper-label, .stepper-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

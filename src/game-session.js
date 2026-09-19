@@ -2,6 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 import { soundAllowed } from "./sound-catalog.js";
 import { rememberLifeChange, undoDecision } from "./life-undo.js";
 import { canonicalIdentity } from "./shared-session.js";
+import { deckKey, NAME_MAX, LABEL_MAX } from "./deck-key.js";
+import { damageKey, worstDamage, migrateSeat, COMMANDER_DAMAGE_LETHAL } from "./commander-damage.js";
 
 // Session audio routing depends on `state.mode`, chosen by the host at
 // creation:
@@ -89,7 +91,6 @@ const POKE_MIN_TURN_MS = 60000;
 
 // The two non-life loss conditions. 21 combat damage from a single commander,
 // or 10 poison counters, and you're out.
-const COMMANDER_DAMAGE_LETHAL = 21;
 const POISON_LETHAL = 10;
 
 // A player is out on any of the three loss conditions. Announced once on the
@@ -99,8 +100,7 @@ function lethalReason(player) {
   if (!player) return null;
   if ((player.lifeTotal ?? 1) <= 0) return "life";
   if ((player.poison ?? 0) >= POISON_LETHAL) return "poison";
-  const worst = Math.max(0, ...Object.values(player.commanderDamage || {}));
-  if (worst >= COMMANDER_DAMAGE_LETHAL) return "commander";
+  if (worstDamage(player.commanderDamage) >= COMMANDER_DAMAGE_LETHAL) return "commander";
   return null;
 }
 
@@ -163,7 +163,12 @@ export class GameSession extends DurableObject {
       if (typeof player.poison !== "number") player.poison = 0;
       if (typeof player.lethalAnnounced !== "boolean") player.lethalAnnounced = false;
       if (typeof player.eliminated !== "boolean") player.eliminated = false;
-      if (typeof player.commanderCasts !== "number") player.commanderCasts = 0;
+      if (typeof player.commanderName2 !== "string") player.commanderName2 = "";
+      if (typeof player.deckLabel !== "string") player.deckLabel = "";
+      migrateSeat(player);
+      if (!player.commanderCasts || typeof player.commanderCasts !== "object") {
+        player.commanderCasts = { 0: 0, 1: 0 };
+      }
       if (player.bracket === undefined) player.bracket = null;
     }
   }
@@ -256,7 +261,7 @@ export class GameSession extends DurableObject {
     const snapshot = JSON.stringify(
       seats.map((p) => ({
         name: (p.displayName || "Player").slice(0, 20),
-        commander: (p.commanderName || "").slice(0, 80),
+        commander: deckKey(p.commanderName, p.commanderName2, p.deckLabel),
         identity: canonicalIdentity((p.colorIdentity || []).join("")) || "C",
         won: p.id === winnerId ? 1 : 0,
       }))
@@ -264,7 +269,7 @@ export class GameSession extends DurableObject {
 
     if (this.env?.DB) {
       for (const seat of seats) {
-        const commander = (seat.commanderName || "").trim();
+        const commander = deckKey(seat.commanderName, seat.commanderName2, seat.deckLabel);
         // Guests, and anyone who never named a commander, have nothing to
         // record against.
         if (!seat.userId || !commander) continue;
@@ -275,7 +280,7 @@ export class GameSession extends DurableObject {
              VALUES (?, ?, ?, ?, ?, ?, 'game', ?)`
           )
             .bind(
-              seat.userId, gameId, commander.slice(0, 80),
+              seat.userId, gameId, commander,
               canonicalIdentity((seat.colorIdentity || []).join("")) || "C",
               Number.isInteger(seat.bracket) ? seat.bracket : null,
               seat.id === winnerId ? 1 : 0, snapshot
@@ -408,7 +413,8 @@ export class GameSession extends DurableObject {
         // From the seat, not from the request — the name on a shared link
         // should be the one the table can see at that seat.
         byName: String(player.displayName || "Someone").slice(0, 20),
-        commander: String(player.commanderName || body.commander || "").slice(0, 80),
+        commander: deckKey(player.commanderName, player.commanderName2, player.deckLabel)
+          || String(body.commander || "").slice(0, 200),
         url: href,
         at: Date.now(),
       });
@@ -539,7 +545,12 @@ export class GameSession extends DurableObject {
           playerId = existing.id;
           existing.connected = true;
           if (msg.displayName) existing.displayName = msg.displayName.slice(0, 20);
-          if (msg.commanderName !== undefined) existing.commanderName = msg.commanderName.slice(0, 40);
+          // 40 used to be the cap here. A double-faced card's own name runs to
+          // 47 characters, so the first Aang deck to sit down would have been
+          // cut in half by it.
+          if (msg.commanderName !== undefined) existing.commanderName = msg.commanderName.slice(0, NAME_MAX);
+          if (msg.commanderName2 !== undefined) existing.commanderName2 = String(msg.commanderName2 || "").slice(0, NAME_MAX);
+          if (msg.deckLabel !== undefined) existing.deckLabel = String(msg.deckLabel || "").slice(0, LABEL_MAX);
           if (Array.isArray(msg.colorIdentity)) existing.colorIdentity = msg.colorIdentity.slice(0, 5);
           existing.bracket = validBracket(msg.bracket);
         } else {
@@ -548,7 +559,11 @@ export class GameSession extends DurableObject {
           this.sessionState.players[playerId] = {
             id: playerId,
             displayName: (msg.displayName || "Player").slice(0, 20),
-            commanderName: (msg.commanderName || "").slice(0, 40),
+            commanderName: (msg.commanderName || "").slice(0, NAME_MAX),
+            // Partner, Partner with, Friends forever, Choose a Background,
+            // Doctor's companion — the format allows two, and never more.
+            commanderName2: String(msg.commanderName2 || "").slice(0, NAME_MAX),
+            deckLabel: String(msg.deckLabel || "").slice(0, LABEL_MAX),
             colorIdentity: Array.isArray(msg.colorIdentity) ? msg.colorIdentity.slice(0, 5) : [],
             // 1-5, or null for "didn't say". Recorded with the game result.
             bracket: validBracket(msg.bracket),
@@ -556,12 +571,14 @@ export class GameSession extends DurableObject {
             isHost: isFirstPlayer,
             connected: true,
             muted: false,
-            // Keyed by the id of the player whose commander dealt it, since
-            // the 21 threshold is per-commander, not cumulative.
+            // Keyed "<playerId>:<slot>" — by the COMMANDER that dealt it, not
+            // by the player, since the 21 threshold is per-commander and a
+            // player may have two.
             commanderDamage: {},
             poison: 0,
-            // Times cast from the command zone. The tax is twice this.
-            commanderCasts: 0,
+            // Times cast from the command zone, per commander: each one has
+            // its own tax. The tax is twice its own count.
+            commanderCasts: { 0: 0, 1: 0 },
             lethalAnnounced: false,
             // Explicit, never inferred: a player at 0 life may still be in the
             // game, and a player at 40 may have decked out or conceded.
@@ -782,12 +799,17 @@ export class GameSession extends DurableObject {
         const delta = Number(msg.delta);
         if (!target || !source || !Number.isFinite(delta) || delta === 0) return;
 
-        const current = target.commanderDamage[source.id] ?? 0;
+        // Which of the source player's commanders dealt it. Absent means the
+        // first, so a client that predates partners keeps working unchanged.
+        const slot = msg.sourceSlot === 1 && source.commanderName2 ? 1 : 0;
+        const bucket = damageKey(source.id, slot);
+
+        const current = target.commanderDamage[bucket] ?? 0;
         const next = Math.max(0, current + delta);
         const applied = next - current; // clamped at zero, so life matches
         if (applied === 0) return;
 
-        target.commanderDamage[source.id] = next;
+        target.commanderDamage[bucket] = next;
         target.lifeTotal -= applied;
         await this.persist();
 
@@ -809,7 +831,9 @@ export class GameSession extends DurableObject {
         const target = this.sessionState.players[msg.targetPlayerId] ?? this.sessionState.players[att.playerId];
         const delta = Number(msg.delta);
         if (!target || !Number.isFinite(delta) || delta === 0) return;
-        target.commanderCasts = Math.max(0, (target.commanderCasts ?? 0) + delta);
+        const slot = msg.slot === 1 && target.commanderName2 ? 1 : 0;
+        const casts = target.commanderCasts || (target.commanderCasts = { 0: 0, 1: 0 });
+        casts[slot] = Math.max(0, (casts[slot] ?? 0) + delta);
         await this.persist();
         this.broadcast({ type: "state_sync", state: this.publicState() });
         break;

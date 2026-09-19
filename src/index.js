@@ -1,5 +1,6 @@
 import { GameSession } from "./game-session.js";
 import { currentUser, unlockIdentity, canonicalIdentity } from "./shared-session.js";
+import { deckKey, parseDeckKey, orderPair, KEY_MAX, LABEL_MAX } from "./deck-key.js";
 
 // Records and history are read fresh every time. They change when a game ends,
 // which is exactly when a stale answer would be most noticeable.
@@ -212,14 +213,18 @@ export default {
       }
       const body = await request.json().catch(() => ({}));
       const code = String(body.code || "").toUpperCase();
-      const commander = String(body.commander || "").trim().slice(0, 80);
+      // The client sends the deck's key; the row is found by its parts, so a
+      // partner deck and a labelled one resolve to exactly one deck.
+      const key = String(body.commander || "").trim().slice(0, KEY_MAX);
+      const parts = parseDeckKey(key);
       const playerId = String(body.playerId || "").slice(0, 64);
       if (code.length !== 4) return Response.json({ ok: false, error: "Bad join code." }, { status: 400 });
-      if (!commander) return Response.json({ ok: false, error: "Sit down with a commander first." }, { status: 400 });
+      if (!parts.commander) return Response.json({ ok: false, error: "Sit down with a commander first." }, { status: 400 });
 
       const row = await env.DB
-        .prepare("SELECT deck_url FROM decks WHERE user_id = ? AND commander = ?")
-        .bind(me.userId, commander)
+        .prepare(`SELECT deck_url FROM decks
+                   WHERE user_id = ? AND commander = ? AND commander2 = ? AND label = ?`)
+        .bind(me.userId, parts.commander, parts.commander2, parts.label)
         .first()
         .catch((e) => { console.error("deck share read failed:", e?.message || e); return { failed: true }; });
 
@@ -237,7 +242,7 @@ export default {
       const res = await stub.fetch("https://internal/deck/share", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ playerId, commander, url: row.deck_url }),
+        body: JSON.stringify({ playerId, commander: key, url: row.deck_url }),
       }).catch(() => null);
       const out = await res?.json().catch(() => ({})) ?? {};
       if (!res?.ok || !out.ok) {
@@ -301,7 +306,7 @@ export default {
             `SELECT id, game_id, commander, identity, bracket, won, source, seats, played_at
                FROM game_history WHERE user_id = ? AND commander = ?
               ORDER BY played_at DESC LIMIT 100`
-          ).bind(me.userId, commander.slice(0, 80))
+          ).bind(me.userId, commander.slice(0, KEY_MAX))
         : env.DB.prepare(
             `SELECT id, game_id, commander, identity, bracket, won, source, seats, played_at
                FROM game_history WHERE user_id = ? ORDER BY played_at DESC LIMIT 100`
@@ -326,8 +331,16 @@ export default {
         return Response.json({ ok: false, error: "Sign in to track games." }, { status: 401 });
       }
       const body = await request.json().catch(() => ({}));
-      const commander = String(body.commander || "").trim().slice(0, 80);
+      // Ordered here as well as in the browser, so the same pair typed either
+      // way round is the same row no matter which client sent it.
+      const [commander, commander2] = orderPair(body.commander, body.commander2);
+      const label = String(body.label || "").replace(/\s+/g, " ").trim().slice(0, LABEL_MAX);
       if (!commander) return Response.json({ ok: false, error: "Name the commander." }, { status: 400 });
+      // Parentheses would make the stored key ambiguous to read back apart,
+      // and nothing in a card name needs them.
+      if (/[()]/.test(label)) {
+        return Response.json({ ok: false, error: "A label can't contain brackets." }, { status: 400 });
+      }
 
       const bracket = Number.isInteger(body.bracket) && body.bracket >= 1 && body.bracket <= 5
         ? body.bracket : null;
@@ -335,7 +348,8 @@ export default {
         await env.DB.prepare(
           `INSERT INTO game_history (user_id, game_id, commander, identity, bracket, won, source, seats)
            VALUES (?, NULL, ?, ?, ?, ?, 'manual', NULL)`
-        ).bind(me.userId, commander, canonicalIdentity(body.identity) || "C",
+        ).bind(me.userId, deckKey(commander, commander2, label),
+               canonicalIdentity(body.identity) || "C",
                bracket, body.won ? 1 : 0).run();
       } catch (e) {
         console.error("manual history write failed:", e?.message || e);
@@ -363,8 +377,8 @@ export default {
       if (!me.signedIn || !env.DB) return Response.json({ signedIn: false, ok: true, decks: [] }, noStore);
       const out = await env.DB
         .prepare(
-          `SELECT id, commander, identity, bracket, deck_url
-             FROM decks WHERE user_id = ? ORDER BY commander ASC LIMIT 100`
+          `SELECT id, commander, commander2, label, identity, bracket, deck_url
+             FROM decks WHERE user_id = ? ORDER BY commander ASC, label ASC LIMIT 100`
         )
         .bind(me.userId).all().catch(logAndEmpty("decks"));
       return Response.json({ signedIn: true, ok: !out.failed, decks: out.results || [] }, noStore);
@@ -376,8 +390,16 @@ export default {
         return Response.json({ ok: false, error: "Sign in to save decks." }, { status: 401 });
       }
       const body = await request.json().catch(() => ({}));
-      const commander = String(body.commander || "").trim().slice(0, 80);
+      // Ordered here as well as in the browser, so the same pair typed either
+      // way round is the same row no matter which client sent it.
+      const [commander, commander2] = orderPair(body.commander, body.commander2);
+      const label = String(body.label || "").replace(/\s+/g, " ").trim().slice(0, LABEL_MAX);
       if (!commander) return Response.json({ ok: false, error: "Name the commander." }, { status: 400 });
+      // Parentheses would make the stored key ambiguous to read back apart,
+      // and nothing in a card name needs them.
+      if (/[()]/.test(label)) {
+        return Response.json({ ok: false, error: "A label can't contain brackets." }, { status: 400 });
+      }
 
       const bracket = Number.isInteger(body.bracket) && body.bracket >= 1 && body.bracket <= 5
         ? body.bracket : null;
@@ -399,14 +421,15 @@ export default {
 
       try {
         await env.DB.prepare(
-          `INSERT INTO decks (user_id, commander, identity, bracket, deck_url)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(user_id, commander) DO UPDATE SET
+          `INSERT INTO decks (user_id, commander, commander2, label, identity, bracket, deck_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, commander, commander2, label) DO UPDATE SET
              identity = excluded.identity,
              bracket = excluded.bracket,
              deck_url = excluded.deck_url,
              updated_at = datetime('now')`
-        ).bind(me.userId, commander, canonicalIdentity(body.identity) || "C", bracket, deckUrl).run();
+        ).bind(me.userId, commander, commander2, label,
+               canonicalIdentity(body.identity) || "C", bracket, deckUrl).run();
       } catch (e) {
         console.error("deck write failed:", e?.message || e);
         return Response.json({ ok: false, error: "Could not save that deck." }, { status: 500 });
