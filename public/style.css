@@ -300,6 +300,38 @@ body {
 .opponents[data-view="rows"] .opponent-deck { flex: 1; justify-content: flex-end; }
 .opponents[data-view="rows"] .opponent-life { font-size: 1.2rem; }
 
+/* … except the life totals, which in a flex row can't line up at all: the
+   number starts wherever the name ends, so a nineteen-character name and a
+   two-letter one put their totals 153px apart. A column of numbers you can
+   compare at a glance is most of why this view exists.
+
+   Columns fix it, and subgrid is what makes them honest: the three rows share
+   ONE set of tracks, so the name column is exactly as wide as the longest name
+   actually at the table rather than a width guessed in advance. A table of
+   Jo, Sam and Ros costs the commander names nothing; one long name costs only
+   what it needs, capped at 40% so it can never crowd the rest out.
+
+   Without subgrid (a browser older than about 2023) the flex rules above still
+   apply — unaligned, but whole. */
+@supports (grid-template-columns: subgrid) {
+  .opponents[data-view="rows"] {
+    grid-template-columns: fit-content(40%) auto minmax(0, 1fr);
+    column-gap: 10px;
+  }
+  .opponents[data-view="rows"] .opponent-row {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: center;
+  }
+  /* The name+life wrapper has to stop being a box so that its two children
+     land in the shared tracks instead of in a nested one of their own. */
+  .opponents[data-view="rows"] .opponent-top { display: contents; }
+  .opponents[data-view="rows"] .opponent-name { min-width: 0; }
+  .opponents[data-view="rows"] .opponent-life { text-align: right; }
+  .opponents[data-view="rows"] .opponent-deck { min-width: 0; justify-content: flex-end; }
+}
+
 .opponent-row {
   display: flex;
   flex-direction: column;
@@ -435,6 +467,19 @@ body {
   grid-template-columns: 1.3fr 1fr 68px;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+/* Grid items default to min-width:auto, so "All players" refuses to be
+   narrower than itself and the whole row grows past the screen — which pushed
+   the Send button 7px off a 360px phone as soon as a fifth player joined and
+   the seat column gained a name. The same default already had to be beaten on
+   .opponent-row; it is the single most reliable way to lose a grid layout. */
+.toggle-col { min-width: 0; }
+.toggle-btn {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .toggle-col {
@@ -1608,6 +1653,10 @@ body::before {
 .hdr-icon { width: 16px; height: 16px; display: block; }
 .header-icon .hdr-icon { margin: 0 auto; }
 .muted-pip { display: inline-flex; width: 12px; height: 12px; color: var(--danger); }
+/* Theirs is red because it affects the table; ours is grey because it affects
+   only this device, and a red mark against someone's name for a choice we made
+   reads like an accusation. */
+.muted-pip.muted-by-me { color: var(--text-muted); }
 .muted-pip .hdr-icon { width: 12px; height: 12px; }
 
 /* ---------- Mana symbols ---------- */
@@ -1811,6 +1860,17 @@ body::before {
   .header-icon.has-news { animation: none; box-shadow: 0 0 10px 2px rgba(217, 183, 92, 0.5); }
   .mic-btn.listening { animation: none; }
 }
+
+/* A rules answer can run long, and mid-game the feed is not the screen. Clip
+   it to about five lines with the rest one tap away — never truncate the text,
+   because an answer that stops mid-sentence is worse than no answer. */
+.oracle-a.is-clipped {
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.oracle-more { margin-top: 4px; font-size: 0.78rem; }
 
 /* ---------- Legal footer ---------- */
 /* Home screen only. The game screen has to fit a phone without scrolling, and

@@ -226,6 +226,27 @@ let session = { players: {}, hostId: null, ambientActivePlayerId: null, mode: "c
 let ambientIsMine = false;
 const cooldownTimers = {}; // soundId -> interval handle
 
+// ---------- muting one player ----------
+// The header's mute is a setting: silence everything. This is a social tool:
+// silence the one person hammering the taunt button, and keep playing.
+//
+// Local and private by design. Nobody is told they've been muted, and nothing
+// is sent to the table — the point is to carry on with someone who is being
+// annoying, not to open a conversation about it.
+//
+// Session-scoped, keyed by player id, deliberately not remembered: ids are
+// issued per table, and a mute silently surviving into a game three weeks
+// later is a surprise nobody asked for.
+const mutedPlayers = new Set();
+
+const playerMuted = (id) => !!id && mutedPlayers.has(id);
+
+function toggleMutePlayer(id) {
+  if (mutedPlayers.has(id)) mutedPlayers.delete(id);
+  else mutedPlayers.add(id);
+  render();
+}
+
 // ---------- how opponents are drawn ----------
 // Boxes pack two to a row; rows give each opponent the full width. Neither wins
 // outright — boxes are compact with an even number of opponents and leave a
@@ -320,8 +341,13 @@ function render() {
       const active = p.id === session.activePlayerId ? " active-turn" : "";
       const doomed = p.eliminated ? " eliminated-row" : isLethal(p) ? " lethal-row" : "";
       const outTag = p.eliminated ? '<span class="out-tag">OUT</span>' : "";
+      // Two different facts that look alike and aren't: theirs means they
+      // can't hear the table, ours means we can't hear them.
       const mutedIcon = p.muted
-        ? `<span class="muted-pip" title="Sounds muted">${SPEAKER_OFF}</span>`
+        ? `<span class="muted-pip" title="Their sounds are off">${SPEAKER_OFF}</span>`
+        : "";
+      const byMeIcon = playerMuted(p.id)
+        ? `<span class="muted-pip muted-by-me" title="You've muted their sounds">${SPEAKER_OFF}</span>`
         : "";
       const tableMarks = tableStateMarks(p.id);
       const commander = p.commanderName
@@ -337,7 +363,7 @@ function render() {
         : "";
       return `<div class="opponent-row${active}${doomed}" data-player-id="${escapeHtml(p.id)}" role="button" tabindex="0">
         <div class="opponent-top">
-          <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span>${mutedIcon}${tableMarks}${outTag}</span>
+          <span class="opponent-name"><span class="${dead}">${escapeHtml(p.displayName)}</span>${mutedIcon}${byMeIcon}${tableMarks}${outTag}</span>
           <span class="opponent-life">${p.lifeTotal}</span>
         </div>
         ${deck}
@@ -422,6 +448,149 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// ---------- the protocol ----------
+// Everything the server can say to this client. Lifted out of the socket's own
+// message listener so it can be called directly — a protocol handler reachable
+// only through a live WebSocket is a protocol handler with no tests.
+function handleMessage(msg) {
+  switch (msg.type) {
+    case "joined": {
+      selfId = msg.playerId;
+      saveStored(code, {
+        playerId: selfId,
+        displayName: lobbyInfo.displayName ?? stored.displayName,
+        commanderName: lobbyInfo.commanderName ?? stored.commanderName,
+        colorIdentity: lobbyInfo.colorIdentity ?? stored.colorIdentity,
+      });
+      showScreen("game");
+      rememberGame(code);
+      requestWakeLock();
+      break;
+    }
+    case "state_sync": {
+      session.players = msg.state.players;
+      session.hostId = msg.state.hostId;
+      session.ambientActivePlayerId = msg.state.ambientActivePlayerId;
+      session.mode = msg.state.mode || "colocated";
+      session.turnOrder = msg.state.turnOrder || [];
+      session.monarchPlayerId = msg.state.monarchPlayerId ?? null;
+      session.initiativePlayerId = msg.state.initiativePlayerId ?? null;
+      session.turnStartedAt = msg.state.turnStartedAt || Date.now();
+      session.activePlayerId = session.turnOrder[msg.state.activePlayerIndex ?? 0] ?? null;
+      render();
+      break;
+    }
+    case "life_update": {
+      if (session.players[msg.playerId]) {
+        session.players[msg.playerId].lifeTotal = msg.lifeTotal;
+        render();
+      }
+      break;
+    }
+    case "lethal": {
+      const box =
+        msg.playerId === selfId
+          ? $("#self-panel")
+          : document.querySelector(`.opponent-row[data-player-id="${CSS.escape(msg.playerId)}"]`);
+      flash(box);
+      // Plays on every device: the table should hear someone go out, not
+      // just the player it happened to.
+      if (!muted) playLethal();
+      break;
+    }
+    case "turn_changed": {
+      session.activePlayerId = msg.activePlayerId;
+      session.turnStartedAt = msg.turnStartedAt;
+      render();
+      break;
+    }
+    case "ambient_changed": {
+      session.ambientActivePlayerId = msg.playerId;
+      render();
+      break;
+    }
+    case "play_sound": {
+      if (muted) break; // sound_activity still lights the UI up
+      // Stopping is never blocked. Skipping ambient_off because its owner is
+      // muted would leave their music playing here with nothing to end it.
+      if (msg.soundId !== "ambient_off" && playerMuted(msg.fromPlayerId)) break;
+      if (msg.soundId === "broadcast") playBroadcast();
+      if (msg.soundId === "damage") playDamage();
+      if (msg.soundId === "life_loss") playLifeLoss();
+      if (msg.soundId === "life_gain") playLifeGain();
+      if (msg.soundId === "taunt") playTaunt();
+      if (msg.soundId === "draw_card") playDrawCard();
+      if (msg.soundId === "ambient_on") playAmbientOn(msg.colorIdentity);
+      if (msg.soundId === "ambient_off") stopAmbient();
+      if (msg.soundId === "poke") playPoke();
+      if (msg.soundId === "pass_turn") playPassTurn();
+      if (msg.soundId === "oracle") playOracleChime();
+      if (LIBRARY_BY_ID[msg.soundId]) playLibrarySound(msg.soundId);
+      break;
+    }
+    case "sound_activity": {
+      showActivity(msg.playerId, msg.soundId);
+      break;
+    }
+    case "cooldown_rejected":
+    case "cooldown_started": {
+      // Both mean the same thing to the UI: show/refresh the countdown.
+      // "_started" additionally reaches players who didn't press the
+      // button themselves, for Board Wipe's shared cooldown.
+      showCooldown(msg.soundId, msg.remainingMs);
+      break;
+    }
+    // Only the last player standing gets this, and only once per game.
+    case "confirm_win": {
+      openModal("Last one standing", confirmWinHtml(msg.opponents));
+      break;
+    }
+
+    // Everyone gets this once the winner has confirmed. setNote() would have
+    // been wrong here — it writes to the lobby's commander field, which
+    // nobody is looking at during a game.
+    case "game_over": {
+      const winner = session.players?.[msg.winnerPlayerId];
+      const mine = msg.winnerPlayerId === selfId;
+      openModal(mine ? "You won" : "Game over", gameOverHtml(winner?.displayName, mine));
+      break;
+    }
+
+    case "oracle_event": {
+      receiveOracleEvent(msg);
+      break;
+    }
+    case "sound_locked": {
+      // The server refused a palette sound. In normal use this is
+      // unreachable — the board doesn't render locked sounds as buttons — so
+      // reaching it means our copy of the entitlements is stale, most likely
+      // a purchase that landed on another device. Re-read rather than
+      // arguing with the server, which is the side that knows.
+      refreshSession();
+      const warn = $("#board-warning");
+      if (warn) {
+        warn.textContent = "That palette isn't unlocked on this account.";
+        warn.hidden = false;
+      }
+      break;
+    }
+    case "error": {
+      if (msg.code === "bad_pin") {
+        leftGame = true; // don't reconnect into a rejection loop
+        ws.close();
+        showScreen("lobby");
+        $("#lobby-error").textContent = msg.message;
+        $("#lobby-error").hidden = false;
+        $("#join-pin-field").hidden = false;
+        setTimeout(() => { leftGame = false; }, 0);
+        break;
+      }
+      console.warn("Server error:", msg.message);
+      break;
+    }
+  }
+}
+
 // ---------- WebSocket ----------
 function connectAndJoin(joinCode, lobbyInfo) {
   // Guard rather than throw: reaching the lobby form without a pending code
@@ -457,143 +626,8 @@ function connectAndJoin(joinCode, lobbyInfo) {
     );
   });
 
-  ws.addEventListener("message", (event) => {
-    const msg = JSON.parse(event.data);
-
-    switch (msg.type) {
-      case "joined": {
-        selfId = msg.playerId;
-        saveStored(code, {
-          playerId: selfId,
-          displayName: lobbyInfo.displayName ?? stored.displayName,
-          commanderName: lobbyInfo.commanderName ?? stored.commanderName,
-          colorIdentity: lobbyInfo.colorIdentity ?? stored.colorIdentity,
-        });
-        showScreen("game");
-        rememberGame(code);
-        requestWakeLock();
-        break;
-      }
-      case "state_sync": {
-        session.players = msg.state.players;
-        session.hostId = msg.state.hostId;
-        session.ambientActivePlayerId = msg.state.ambientActivePlayerId;
-        session.mode = msg.state.mode || "colocated";
-        session.turnOrder = msg.state.turnOrder || [];
-        session.monarchPlayerId = msg.state.monarchPlayerId ?? null;
-        session.initiativePlayerId = msg.state.initiativePlayerId ?? null;
-        session.turnStartedAt = msg.state.turnStartedAt || Date.now();
-        session.activePlayerId = session.turnOrder[msg.state.activePlayerIndex ?? 0] ?? null;
-        render();
-        break;
-      }
-      case "life_update": {
-        if (session.players[msg.playerId]) {
-          session.players[msg.playerId].lifeTotal = msg.lifeTotal;
-          render();
-        }
-        break;
-      }
-      case "lethal": {
-        const box =
-          msg.playerId === selfId
-            ? $("#self-panel")
-            : document.querySelector(`.opponent-row[data-player-id="${CSS.escape(msg.playerId)}"]`);
-        flash(box);
-        // Plays on every device: the table should hear someone go out, not
-        // just the player it happened to.
-        if (!muted) playLethal();
-        break;
-      }
-      case "turn_changed": {
-        session.activePlayerId = msg.activePlayerId;
-        session.turnStartedAt = msg.turnStartedAt;
-        render();
-        break;
-      }
-      case "ambient_changed": {
-        session.ambientActivePlayerId = msg.playerId;
-        render();
-        break;
-      }
-      case "play_sound": {
-        if (muted) break; // sound_activity still lights the UI up
-        if (msg.soundId === "broadcast") playBroadcast();
-        if (msg.soundId === "damage") playDamage();
-        if (msg.soundId === "life_loss") playLifeLoss();
-        if (msg.soundId === "life_gain") playLifeGain();
-        if (msg.soundId === "taunt") playTaunt();
-        if (msg.soundId === "draw_card") playDrawCard();
-        if (msg.soundId === "ambient_on") playAmbientOn(msg.colorIdentity);
-        if (msg.soundId === "ambient_off") stopAmbient();
-        if (msg.soundId === "poke") playPoke();
-        if (msg.soundId === "pass_turn") playPassTurn();
-        if (msg.soundId === "oracle") playOracleChime();
-        if (LIBRARY_BY_ID[msg.soundId]) playLibrarySound(msg.soundId);
-        break;
-      }
-      case "sound_activity": {
-        showActivity(msg.playerId, msg.soundId);
-        break;
-      }
-      case "cooldown_rejected":
-      case "cooldown_started": {
-        // Both mean the same thing to the UI: show/refresh the countdown.
-        // "_started" additionally reaches players who didn't press the
-        // button themselves, for Board Wipe's shared cooldown.
-        showCooldown(msg.soundId, msg.remainingMs);
-        break;
-      }
-      // Only the last player standing gets this, and only once per game.
-      case "confirm_win": {
-        openModal("Last one standing", confirmWinHtml(msg.opponents));
-        break;
-      }
-
-      // Everyone gets this once the winner has confirmed. setNote() would have
-      // been wrong here — it writes to the lobby's commander field, which
-      // nobody is looking at during a game.
-      case "game_over": {
-        const winner = session.players?.[msg.winnerPlayerId];
-        const mine = msg.winnerPlayerId === selfId;
-        openModal(mine ? "You won" : "Game over", gameOverHtml(winner?.displayName, mine));
-        break;
-      }
-
-      case "oracle_event": {
-        receiveOracleEvent(msg);
-        break;
-      }
-      case "sound_locked": {
-        // The server refused a palette sound. In normal use this is
-        // unreachable — the board doesn't render locked sounds as buttons — so
-        // reaching it means our copy of the entitlements is stale, most likely
-        // a purchase that landed on another device. Re-read rather than
-        // arguing with the server, which is the side that knows.
-        refreshSession();
-        const warn = $("#board-warning");
-        if (warn) {
-          warn.textContent = "That palette isn't unlocked on this account.";
-          warn.hidden = false;
-        }
-        break;
-      }
-      case "error": {
-        if (msg.code === "bad_pin") {
-          leftGame = true; // don't reconnect into a rejection loop
-          ws.close();
-          showScreen("lobby");
-          $("#lobby-error").textContent = msg.message;
-          $("#lobby-error").hidden = false;
-          $("#join-pin-field").hidden = false;
-          setTimeout(() => { leftGame = false; }, 0);
-          break;
-        }
-        console.warn("Server error:", msg.message);
-        break;
-      }
-    }
-  });
+  // One line, so the protocol handler can be exercised without a live socket.
+  ws.addEventListener("message", (event) => handleMessage(JSON.parse(event.data)));
 
   // Phones close WebSockets aggressively — backgrounding the tab or letting
   // the screen sleep is enough. Without this the whole UI goes quietly inert:
@@ -1500,7 +1534,7 @@ function oracleFeedHtml() {
     return `<p class="empty-state">Nothing asked yet. Anything answered here is shown to everyone.</p>`;
   }
   return oracleFeed
-    .map((e) =>
+    .map((e, i) =>
       e.kind === "card"
         ? `<div class="oracle-card-entry" data-scryfall="${escapeHtml(e.scryfallId)}">
              <p class="field-note">${escapeHtml(e.askedBy || "Someone")} showed a card</p>
@@ -1508,11 +1542,21 @@ function oracleFeedHtml() {
            </div>`
         : `<div class="oracle-entry">
              <p class="oracle-q">${escapeHtml(e.askedBy || "Someone")} asked: ${escapeHtml(e.question)}</p>
-             <div class="oracle-a">${oracleMarkup(e.answer)}</div>
+             <div class="oracle-a${longAnswer(e) ? " is-clipped" : ""}">${oracleMarkup(e.answer)}</div>
+             ${longAnswer(e)
+               ? `<button class="link-btn oracle-more" type="button" data-expand="${i}">Show the rest</button>`
+               : ""}
            </div>`
     )
     .join("");
 }
+
+// Four or five lines is what a phone can hold mid-game without the feed
+// becoming the screen. Clipped, never truncated — the whole answer is one tap
+// away, and a rules answer cut off at a full stop you can't see is worse than
+// no answer at all.
+const LONG_ANSWER_CHARS = 300;
+const longAnswer = (e) => !e.expanded && String(e.answer || "").length > LONG_ANSWER_CHARS;
 
 // The answer is model-written text, so it is escaped first and only then given
 // the two pieces of formatting it actually uses. Nothing here can introduce a
@@ -1728,6 +1772,18 @@ $("#btn-legal").addEventListener("click", () => openModal("What this app collect
 $("#btn-help").addEventListener("click", () => openModal("How this works", HELP_HTML));
 $("#btn-card-lookup").addEventListener("click", () => openOracle("card"));
 $("#btn-rules").addEventListener("click", () => openOracle("rules"));
+
+// Expanding is remembered on the entry itself, so a new answer arriving and
+// re-rendering the feed doesn't collapse the one someone is reading.
+modalBody.addEventListener("click", (e) => {
+  const more = e.target.closest("[data-expand]");
+  if (!more) return;
+  const entry = oracleFeed[Number(more.dataset.expand)];
+  if (!entry) return;
+  entry.expanded = true;
+  const feed = $("#oracle-feed");
+  if (feed) { feed.innerHTML = oracleFeedHtml(); fillOracleCards(); }
+});
 
 modalBody.addEventListener("input", (e) => {
   if (e.target.id === "cmdr-search") return renderCommanderSearch(e.target.value);
@@ -2319,6 +2375,9 @@ function openPlayerMenu(playerId) {
       <button class="btn btn-secondary" type="button" data-menu="taunt">Taunt</button>
       <button class="btn btn-secondary" type="button" data-menu="poke"${canPoke ? "" : " disabled"}>Poke</button>
       <button class="btn btn-secondary" type="button" data-menu="view"${player.commanderName ? "" : " disabled"}>View commander</button>
+      <button class="btn btn-secondary" type="button" data-menu="mute">
+        ${playerMuted(playerId) ? "Unmute their sounds" : "Mute their sounds"}
+      </button>
       <button class="btn btn-secondary" type="button" data-menu="monarch">
         ${session.monarchPlayerId === playerId ? "Remove the monarch" : "Make them the monarch"}
       </button>
@@ -2340,6 +2399,12 @@ modalBody.addEventListener("click", (e) => {
   const player = session.players[menuTargetId];
   if (action === "close" || !player) return closeModal();
   if (action === "view") return openCardModal(player.commanderName);
+  if (action === "mute") {
+    toggleMutePlayer(menuTargetId);
+    // Reopened rather than closed: muting someone mid-game is usually followed
+    // by something else in this menu, and the label has to flip either way.
+    return openPlayerMenu(menuTargetId);
+  }
   if (action === "eliminate") return confirmEliminate(player.id, !player.eliminated);
   if (action === "monarch" || action === "initiative") {
     sendMessage({ type: "set_table_state", which: action, playerId: menuTargetId });
