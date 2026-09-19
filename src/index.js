@@ -201,6 +201,52 @@ export default {
       }
     }
 
+    // Share your own decklist with the table. The client sends no URL: it says
+    // "share mine", and the link is read here out of the player's own deck row.
+    // A link that three other people are about to tap is not something a
+    // browser gets to supply — same rule as the Oracle answer.
+    if (url.pathname === "/api/decks/share" && request.method === "POST") {
+      const me = await currentUser(request, env).catch(() => ({ signedIn: false }));
+      if (!me.signedIn || !env.DB) {
+        return Response.json({ ok: false, error: "Sign in to share a decklist." }, { status: 401 });
+      }
+      const body = await request.json().catch(() => ({}));
+      const code = String(body.code || "").toUpperCase();
+      const commander = String(body.commander || "").trim().slice(0, 80);
+      const playerId = String(body.playerId || "").slice(0, 64);
+      if (code.length !== 4) return Response.json({ ok: false, error: "Bad join code." }, { status: 400 });
+      if (!commander) return Response.json({ ok: false, error: "Sit down with a commander first." }, { status: 400 });
+
+      const row = await env.DB
+        .prepare("SELECT deck_url FROM decks WHERE user_id = ? AND commander = ?")
+        .bind(me.userId, commander)
+        .first()
+        .catch((e) => { console.error("deck share read failed:", e?.message || e); return { failed: true }; });
+
+      if (row?.failed) {
+        return Response.json({ ok: false, error: "Couldn't reach your decks just now." }, { status: 503 });
+      }
+      if (!row?.deck_url) {
+        return Response.json({
+          ok: false,
+          error: "No decklist saved for this commander — add one under My Commanders.",
+        }, { status: 404 });
+      }
+
+      const stub = env.GAME_SESSION.get(env.GAME_SESSION.idFromName(code));
+      const res = await stub.fetch("https://internal/deck/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ playerId, commander, url: row.deck_url }),
+      }).catch(() => null);
+      const out = await res?.json().catch(() => ({})) ?? {};
+      if (!res?.ok || !out.ok) {
+        return Response.json({ ok: false, error: out.error || "Couldn't reach the table." },
+          { status: res?.status || 502 });
+      }
+      return Response.json({ ok: true });
+    }
+
     // ── Records, history and decks ──────────────────────────────────────────
     // All account-only. Guests get a signedIn:false shape rather than an empty
     // list, so the UI can say "sign in and these are kept" instead of showing

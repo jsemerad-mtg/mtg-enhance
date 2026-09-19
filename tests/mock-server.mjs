@@ -24,6 +24,7 @@ const INITIAL_DECKS = [
 ];
 let mockDecks = INITIAL_DECKS.map((d) => ({ ...d }));
 let lastDeckPost = null;
+let lastShare = null;
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
@@ -146,16 +147,30 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ ok: true }));
   }
 
+  // Sharing sends no URL: the Worker reads it out of the player's deck row,
+  // which is the whole point of the endpoint existing.
+  if (url.pathname === "/api/decks/share" && req.method === "POST") {
+    let body = ""; for await (const c of req) body += c;
+    const b = JSON.parse(body || "{}");
+    lastShare = b;
+    const row = mockDecks.find((d) => d.commander === b.commander);
+    res.writeHead(row?.deck_url ? 200 : 404, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(row?.deck_url
+      ? { ok: true }
+      : { ok: false, error: "No decklist saved for this commander — add one under My Commanders." }));
+  }
+
   if (url.pathname === "/__reset" && req.method === "POST") {
     mockDecks = INITIAL_DECKS.map((d) => ({ ...d }));
     lastDeckPost = null;
+    lastShare = null;
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end("{}");
   }
 
   if (url.pathname === "/__decks") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ decks: mockDecks, lastDeckPost }));
+    return res.end(JSON.stringify({ decks: mockDecks, lastDeckPost, lastShare }));
   }
 
   if (url.pathname === "/api/unlock-identity" && req.method === "POST") {

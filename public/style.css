@@ -238,6 +238,9 @@ body {
 }
 
 .self-panel {
+  /* Positioning context for the undo chip, which overlays the panel's bottom
+     edge rather than taking a row of a screen that has none to give. */
+  position: relative;
   background: var(--panel-raised);
   border: 1px solid var(--hairline);
   border-radius: 16px;
@@ -1871,6 +1874,52 @@ body::before {
   overflow: hidden;
 }
 .oracle-more { margin-top: 4px; font-size: 0.78rem; }
+
+/* A shared decklist. Host first, because that is what tells you whether to
+   trust a link before you tap it. */
+.deck-link {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  font-size: 0.82rem;
+}
+
+/* Ten seconds of life, so it costs no layout height: it straddles the bottom
+   edge of the panel whose number just moved, which is also where the eye
+   already is. */
+.undo-chip {
+  position: absolute;
+  left: 50%;
+  bottom: -13px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 7px 5px 12px;
+  border: 1px solid var(--accent-dim);
+  border-radius: 999px;
+  background: var(--panel);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  z-index: 3;
+}
+.undo-chip[hidden] { display: none; }
+.undo-chip button {
+  border: 1px solid var(--accent-dim);
+  border-radius: 999px;
+  background: none;
+  color: var(--accent);
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  padding: 3px 11px;
+  cursor: pointer;
+}
+.undo-chip button:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 
 /* ---------- Legal footer ---------- */
 /* Home screen only. The game screen has to fit a phone without scrolling, and

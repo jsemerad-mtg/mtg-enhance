@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { soundAllowed } from "./sound-catalog.js";
+import { rememberLifeChange, undoDecision } from "./life-undo.js";
 import { canonicalIdentity } from "./shared-session.js";
 
 // Session audio routing depends on `state.mode`, chosen by the host at
@@ -130,6 +131,12 @@ export class GameSession extends DurableObject {
     super(ctx, env);
     this.ctx = ctx;
     this.sessionState = null;
+    // Life changes someone else made to you, undoable for a few seconds.
+    // Deliberately NOT in sessionState and never persisted: the window is
+    // twelve seconds, and a DO that hibernated and came back has already
+    // outlived it. If the map is gone the undo simply fails, which is the
+    // honest answer rather than a resurrected button that does nothing.
+    this.recentLife = new Map();
     // Rehydrate from storage before handling any request — the DO may
     // have hibernated and lost its in-memory state between messages.
     ctx.blockConcurrencyWhile(async () => {
@@ -375,6 +382,39 @@ export class GameSession extends DurableObject {
       return Response.json({ ok: true });
     }
 
+    // The Worker posts a decklist link here after reading it out of D1 and
+    // checking the scheme. The DO never takes a URL from a player's socket:
+    // the same rule as the Oracle answer and the card lookup — a client can
+    // ask for something to be shared, but cannot choose the text that lands
+    // on three other people's screens.
+    if (url.pathname === "/deck/share") {
+      if (!this.sessionState) return Response.json({ ok: false }, { status: 404 });
+      const body = await request.json().catch(() => ({}));
+      const player = this.sessionState.players[String(body.playerId || "")];
+      if (!player) return Response.json({ ok: false, error: "Not at this table." }, { status: 403 });
+
+      let href = "";
+      try {
+        const parsed = new URL(String(body.url || ""));
+        if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("scheme");
+        href = parsed.toString().slice(0, 500);
+      } catch {
+        return Response.json({ ok: false, error: "That isn't a web link." }, { status: 400 });
+      }
+
+      this.broadcast({
+        type: "deck_shared",
+        byPlayerId: player.id,
+        // From the seat, not from the request — the name on a shared link
+        // should be the one the table can see at that seat.
+        byName: String(player.displayName || "Someone").slice(0, 20),
+        commander: String(player.commanderName || body.commander || "").slice(0, 80),
+        url: href,
+        at: Date.now(),
+      });
+      return Response.json({ ok: true });
+    }
+
     if (url.pathname === "/claim") {
       if (this.sessionState) return Response.json({ claimed: false });
       const body = await request.json().catch(() => ({}));
@@ -560,6 +600,41 @@ export class GameSession extends DurableObject {
         break;
       }
 
+      case "undo_life": {
+        // The guards live in src/life-undo.js so they can be tested without a
+        // live Durable Object: unknown or already-used, someone else's change,
+        // or past the window.
+        const verdict = undoDecision(this.recentLife, msg.eventId, att.playerId);
+        if (!verdict.ok) {
+          // An expired entry is dropped on the way past; a rejection is
+          // otherwise silent, because the button is already gone on their
+          // screen and there is nothing for them to do about it.
+          if (verdict.reason === "expired") this.recentLife.delete(String(msg.eventId));
+          return;
+        }
+        const entry = verdict.entry;
+        // Single use: spent the moment it is honoured, so a replayed message
+        // cannot drain a life total in a loop.
+        this.recentLife.delete(String(msg.eventId));
+
+        const undoTarget = this.sessionState.players[entry.targetId];
+        if (!undoTarget) return;
+        undoTarget.lifeTotal -= entry.delta;
+        await this.persist();
+
+        this.broadcast({ type: "life_update", playerId: undoTarget.id, lifeTotal: undoTarget.lifeTotal });
+        // The table is told, because a number moving twice with no explanation
+        // is how four people end up disagreeing about the board.
+        this.broadcast({
+          type: "life_undone",
+          playerId: undoTarget.id,
+          name: String(undoTarget.displayName || "Someone").slice(0, 20),
+          delta: entry.delta,
+        });
+        this.announceLethal(undoTarget);
+        break;
+      }
+
       case "life_event": {
         // Covers Deal Damage's three flavors — gaining life, losing life,
         // and taking damage — since they only differ in the delta's sign
@@ -599,6 +674,10 @@ export class GameSession extends DurableObject {
           this.sendToPlayer(att.playerId, { type: "play_sound", soundId, fromPlayerId: att.playerId });
         }
 
+        const actorName = String(
+          this.sessionState.players[att.playerId]?.displayName || "Someone"
+        ).slice(0, 20);
+
         for (const target of targets) {
           this.broadcast({ type: "life_update", playerId: target.id, lifeTotal: target.lifeTotal });
           this.announceLethal(target);
@@ -611,6 +690,21 @@ export class GameSession extends DurableObject {
             fromPlayerId: att.playerId,
           });
           this.announceLethal(target);
+
+          // Somebody else moved your number. You get a few seconds to put it
+          // back — no acknowledgement required, nothing blocked, and the table
+          // carries on either way. A change you made to yourself needs no undo
+          // button: the other arrow is right there.
+          if (target.id !== att.playerId) {
+            const eventId = rememberLifeChange(this.recentLife, target.id, delta);
+            this.sendToPlayer(target.id, {
+              type: "life_changed_by",
+              eventId,
+              byPlayerId: att.playerId,
+              byName: actorName,
+              delta,
+            });
+          }
         }
         break;
       }

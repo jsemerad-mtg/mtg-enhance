@@ -7,7 +7,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "build:commanders": "node scripts/build-commanders.js",
-    "test": "node tests/entitlements.test.mjs && node tests/sound-auth.test.mjs",
+    "test": "node tests/entitlements.test.mjs && node tests/sound-auth.test.mjs && node tests/life-undo.test.mjs",
     "build:sounds": "node scripts/build-sounds.js",
     "test:ui": "node tests/run-ui.mjs"
   },

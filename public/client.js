@@ -239,6 +239,48 @@ const cooldownTimers = {}; // soundId -> interval handle
 // later is a surprise nobody asked for.
 const mutedPlayers = new Set();
 
+// ---------- undoing a life change someone else made ----------
+// Flash and undo, not an accept gate. Commander life totals move constantly
+// and correctly without the affected player's input — combat damage,
+// symmetrical effects, "each opponent loses 3" — so requiring four
+// acknowledgements per board wipe would turn the fastest part of the app into
+// the slowest, and an unacknowledged change leaves the table's totals in
+// disagreement, which is worse than a wrong total nobody noticed.
+//
+// One pending undo, always the most recent. A second change replacing the
+// first is the ordinary shallow-undo contract, and a queue of chips stacking
+// up mid-combat is its own problem.
+let pendingUndo = null;   // { eventId, byName, delta }
+let undoTimer = null;
+
+// Twelve seconds server-side, ten here — so the button disappears just before
+// the window closes rather than just after, and never lies about what it does.
+const UNDO_VISIBLE_MS = 10000;
+
+function showUndo(msg) {
+  pendingUndo = { eventId: msg.eventId, byName: msg.byName || "Someone", delta: msg.delta };
+  renderUndo();
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(clearUndo, UNDO_VISIBLE_MS);
+}
+
+function clearUndo() {
+  clearTimeout(undoTimer);
+  undoTimer = null;
+  pendingUndo = null;
+  renderUndo();
+}
+
+function renderUndo() {
+  const chip = $("#undo-chip");
+  if (!chip) return;
+  chip.hidden = !pendingUndo;
+  if (!pendingUndo) return;
+  const { delta, byName } = pendingUndo;
+  $("#undo-text").textContent =
+    `${delta > 0 ? "+" : "\u2212"}${Math.abs(delta)} from ${byName}`;
+}
+
 const playerMuted = (id) => !!id && mutedPlayers.has(id);
 
 function toggleMutePlayer(id) {
@@ -526,6 +568,34 @@ function handleMessage(msg) {
       if (msg.soundId === "pass_turn") playPassTurn();
       if (msg.soundId === "oracle") playOracleChime();
       if (LIBRARY_BY_ID[msg.soundId]) playLibrarySound(msg.soundId);
+      break;
+    }
+    case "life_changed_by": {
+      showUndo(msg);
+      break;
+    }
+    case "life_undone": {
+      // Everyone sees the number move back. Without the flash, a total that
+      // changes twice in five seconds looks like a bug rather than someone
+      // fixing a mis-tap.
+      flash(msg.playerId === selfId
+        ? $("#self-panel")
+        : document.querySelector(`.opponent-row[data-player-id="${CSS.escape(msg.playerId)}"]`));
+      if (msg.playerId === selfId) clearUndo();
+      break;
+    }
+    case "deck_shared": {
+      oracleFeed = [{ kind: "deck", askedBy: msg.byName, commander: msg.commander,
+                      url: msg.url, at: msg.at }, ...oracleFeed].slice(0, 20);
+      const feedOpen = !modalBackdrop.hidden && modalBody.classList.contains("oracle-modal");
+      if (feedOpen) {
+        const feed = $("#oracle-feed");
+        if (feed) { feed.innerHTML = oracleFeedHtml(); fillOracleCards(); }
+      } else {
+        oracleUnread.card += 1;
+        renderOracleBadge();
+      }
+      if (!muted && !playerMuted(msg.byPlayerId)) playOracleChime();
       break;
     }
     case "sound_activity": {
@@ -1535,7 +1605,14 @@ function oracleFeedHtml() {
   }
   return oracleFeed
     .map((e, i) =>
-      e.kind === "card"
+      e.kind === "deck"
+        ? `<div class="oracle-entry">
+             <p class="field-note">${escapeHtml(e.askedBy || "Someone")} shared a decklist${
+               e.commander ? ` — ${escapeHtml(e.commander)}` : ""}</p>
+             <a class="deck-link" href="${escapeHtml(e.url)}" target="_blank"
+                rel="noopener noreferrer">${escapeHtml(prettyUrl(e.url))}</a>
+           </div>`
+      : e.kind === "card"
         ? `<div class="oracle-card-entry" data-scryfall="${escapeHtml(e.scryfallId)}">
              <p class="field-note">${escapeHtml(e.askedBy || "Someone")} showed a card</p>
              <div class="oracle-card-body">Loading…</div>
@@ -1555,6 +1632,18 @@ function oracleFeedHtml() {
 // becoming the screen. Clipped, never truncated — the whole answer is one tap
 // away, and a rules answer cut off at a full stop you can't see is worse than
 // no answer at all.
+// The host is what tells you whether to trust a link before you tap it, so it
+// leads. Everything after it is decoration at this width.
+function prettyUrl(raw) {
+  try {
+    const u = new URL(raw);
+    const tail = (u.pathname + u.search).replace(/\/$/, "");
+    return u.host + (tail.length > 28 ? tail.slice(0, 27) + "\u2026" : tail);
+  } catch {
+    return String(raw || "").slice(0, 60);
+  }
+}
+
 const LONG_ANSWER_CHARS = 300;
 const longAnswer = (e) => !e.expanded && String(e.answer || "").length > LONG_ANSWER_CHARS;
 
@@ -2125,6 +2214,43 @@ function renderSoundboard() {
       <span class="icon-sub"></span>
     </button>`;
 }
+
+$("#btn-undo-life").addEventListener("click", () => {
+  if (!pendingUndo) return;
+  sendMessage({ type: "undo_life", eventId: pendingUndo.eventId });
+  // Hidden immediately rather than on the echo. The server is authoritative
+  // about the number; the button is about intent, and a control that stays up
+  // after you press it invites a second press.
+  clearUndo();
+});
+
+// Asking to share, not supplying a link: the Worker reads the URL out of this
+// player's own deck row and posts it into the table. Nothing typed in a
+// browser reaches three other people's screens.
+async function shareMyDeck(btn) {
+  const self = session.players[selfId];
+  if (!self?.commanderName || !code) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/decks/share", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, commander: self.commanderName, playerId: selfId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  } catch (e) {
+    openModal("Couldn't share that", `<p>${escapeHtml(String(e.message || e))}</p>`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("#counter-chips").addEventListener("click", (e) => {
+  const share = e.target.closest("[data-share-deck]");
+  if (share) shareMyDeck(share);
+});
 
 $("#btn-opp-view").addEventListener("click", () => {
   const count = Math.max(0, Object.keys(session.players).length - 1);
@@ -3683,11 +3809,23 @@ function commanderTax(player) {
   return (player?.commanderCasts ?? 0) * 2;
 }
 
+// Your own saved decklist for the commander you actually sat down with. The
+// link is never sent from here — this only decides whether to offer the
+// button; the Worker reads the URL out of your deck row.
+function myDeckUrl() {
+  const self = session.players[selfId];
+  const name = self?.commanderName;
+  if (!name || !signedIn()) return "";
+  const row = decks.find((d) => String(d.commander).toLowerCase() === name.toLowerCase());
+  return row?.deck_url || "";
+}
+
 const CHIP_ICONS = {
   more: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2.1" fill="currentColor" stroke="none"/><circle cx="10" cy="16" r="2.1" fill="currentColor" stroke="none"/></svg>`,
   poison: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C7.6 2 4 5.4 4 9.6c0 2.5 1.2 4.4 3 5.6V18a1 1 0 0 0 1 1h1.2l.4 2.2a1 1 0 0 0 1 .8h2.8a1 1 0 0 0 1-.8l.4-2.2H16a1 1 0 0 0 1-1v-2.8c1.8-1.2 3-3.1 3-5.6C20 5.4 16.4 2 12 2Zm-3 9a1.8 1.8 0 1 1 0-3.6 1.8 1.8 0 0 1 0 3.6Zm6 0a1.8 1.8 0 1 1 0-3.6 1.8 1.8 0 0 1 0 3.6Z"/></svg>`,
   tax: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 16c4-8 12-8 16 0"/><path d="M12 3v3M7.5 5l1.5 2.6M16.5 5 15 7.6"/></svg>`,
   cmdr: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20 14 10M7 4l13 13M10 7 7 4 4 7l3 3M17 20l3-3"/></svg>`,
+  share: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5.5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="18.5" r="2.6"/><path d="m8.3 10.7 7.4-4M8.3 13.3l7.4 4"/></svg>`,
 };
 
 function chip(kind, label, value, extraClass = "") {
@@ -3715,6 +3853,13 @@ function renderCounterChips() {
   ];
   if (worst > 0) {
     chips.push(chip("cmdr", "Commander damage taken", worst, chipClass(worst, COMMANDER_DAMAGE_LETHAL)));
+  }
+  // Offered only when there is something to send. A share button that always
+  // shows and usually errors teaches people to ignore it.
+  if (myDeckUrl()) {
+    chips.push(`<button type="button" class="counter-chip" data-share-deck="1"
+      aria-label="Share your decklist with the table" title="Share your decklist">
+      <span class="chip-icon">${CHIP_ICONS.share}</span></button>`);
   }
   $("#counter-chips").innerHTML = chips.join("");
 }

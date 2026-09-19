@@ -239,6 +239,13 @@
         <div id="counter-chips" class="counter-chips"></div>
         <button id="btn-pass-turn" class="btn pass-turn-btn" type="button" hidden>Pass turn</button>
       </div>
+      <!-- Overlaid rather than placed in the flow: the game screen has no
+           spare height, and a control that lives for ten seconds should not
+           reserve a row for the rest of the game. -->
+      <div class="undo-chip" id="undo-chip" role="status" hidden>
+        <span id="undo-text"></span>
+        <button type="button" id="btn-undo-life">Undo</button>
+      </div>
     </div>
 
     <div class="opponents-head" id="opponents-head" hidden>
