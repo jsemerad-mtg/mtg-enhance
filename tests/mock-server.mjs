@@ -58,10 +58,16 @@ const server = http.createServer(async (req, res) => {
     // A brand-new account: decks saved, no game ever finished. This is the
     // shape that made the colours tab render nothing.
     if (mock.emptyRecords) {
-      return res.end(JSON.stringify({ signedIn: true, byCommander: [], byIdentity: [] }));
+      return res.end(JSON.stringify({ signedIn: true, ok: true, byCommander: [], byIdentity: [] }));
+    }
+    // A 200 whose query threw. Empty arrays AND ok:false — the point is that
+    // the client must believe the flag rather than the (empty) data.
+    if (mock.failRecords) {
+      return res.end(JSON.stringify({ signedIn: true, ok: false, byCommander: [], byIdentity: [] }));
     }
     return res.end(JSON.stringify({
       signedIn: true,
+      ok: true,
       byCommander: [
         { commander: "Atraxa, Grand Unifier", identity: "WUBG", wins: 4, losses: 3, last_played: "2026-09-12" },
         { commander: "Krenko, Mob Boss", identity: "R", wins: 1, losses: 5, last_played: "2026-09-01" },
@@ -73,7 +79,8 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/api/history" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
     if (mock.mode !== "in") return res.end(JSON.stringify({ signedIn: false, games: [] }));
-    if (mock.emptyRecords) return res.end(JSON.stringify({ signedIn: true, games: [] }));
+    if (mock.emptyRecords) return res.end(JSON.stringify({ signedIn: true, ok: true, games: [] }));
+    if (mock.failHistory) return res.end(JSON.stringify({ signedIn: true, ok: false, games: [] }));
     // ?commander= narrows it to one deck, the same way the Worker does. Without
     // this the mock hands back every game for every commander, which hides the
     // exact regression the filter exists to prevent.
@@ -91,6 +98,7 @@ const server = http.createServer(async (req, res) => {
     ];
     return res.end(JSON.stringify({
       signedIn: true,
+      ok: true,
       games: only ? all.filter((g) => g.commander === only) : all,
     }));
   }
@@ -110,8 +118,9 @@ const server = http.createServer(async (req, res) => {
   // Deck rows the mock remembers between requests, so a save can be observed.
   if (url.pathname === "/api/decks" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    if (mock.mode !== "in") return res.end(JSON.stringify({ signedIn: false, decks: [] }));
-    return res.end(JSON.stringify({ signedIn: true, decks: mockDecks }));
+    if (mock.mode !== "in") return res.end(JSON.stringify({ signedIn: false, ok: true, decks: [] }));
+    if (mock.failDecks) return res.end(JSON.stringify({ signedIn: true, ok: false, decks: [] }));
+    return res.end(JSON.stringify({ signedIn: true, ok: true, decks: mockDecks }));
   }
 
   if (url.pathname === "/api/decks" && req.method === "POST") {

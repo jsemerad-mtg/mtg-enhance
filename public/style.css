@@ -56,7 +56,11 @@ body {
   max-width: 440px;
   margin: 0 auto;
   padding: 32px 20px 48px;
+  /* 100vh on iOS Safari is the viewport with the toolbars HIDDEN, so a layout
+     built to it is taller than what anyone can see. dvh is the live one; the
+     vh line stays as the fallback for browsers without it. */
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .screen[hidden] { display: none; }
@@ -1179,6 +1183,39 @@ body {
   padding-bottom: 10px;
 }
 
+/* Shorter than a modern phone. An iPhone SE or 8 is 667px tall and the game
+   screen is laid out for 844, so everything below gives back a few pixels
+   without changing what anything IS: the life buttons stay thumb-sized and the
+   soundboard keeps both rows. Selectors carry #screen-game so they outrank the
+   base rules, the way the padding trim above already has to.
+
+   The threshold is 800px rather than 760 because a very common Android size is
+   360x780, which lands one pixel over without it — and one pixel of scroll is
+   still a scrollbar. A 390x844 phone is untouched.
+   Closing the SE's completely would cost either the second soundboard row or a
+   materially smaller life control — a product decision, not a CSS one. The
+   measured budget is in claude/game-screen.md. */
+@media (max-height: 800px) {
+  .step-train { margin-bottom: 10px; }
+
+  #app:has(#screen-game:not([hidden])) { padding-top: 10px; padding-bottom: 8px; }
+
+  #screen-game .self-panel { padding: 10px 12px; }
+  #screen-game .life-row { margin: 4px 0; }
+  #screen-game .life-total { font-size: 2.6rem; }
+  #screen-game .self-actions { margin-top: 4px; }
+
+  #screen-game .opponents-head { margin-bottom: 4px; }
+  #screen-game .opponents { margin-bottom: 10px; gap: 7px; }
+  #screen-game .opponent-row { padding: 8px 11px; }
+
+  #screen-game .soundboard { gap: 6px; margin: 0 0 10px; }
+  #screen-game .icon-btn { padding: 6px 4px; }
+  #screen-game .icon-btn .icon { width: 18px; height: 18px; }
+
+  #screen-game .life-event-panel { padding: 8px; }
+}
+
 /* Grid items default to min-width:auto, so a long commander name widens the
    column past its 1fr share and the second card spills off the screen. */
 .opponent-row { min-width: 0; }
@@ -1860,8 +1897,12 @@ body::before {
   flex: 0 0 auto;
 }
 
-/* At phone width the labels are what has to give, not the layout. */
-@media (max-width: 359px) {
+/* At phone width the labels are what has to give, not the layout. The
+   threshold was 359px, which is narrower than essentially every phone sold —
+   so on a 375 or 360 device the train wrapped to two lines instead, costing
+   37px of a screen that has none to spare. 383px is the width at which three
+   labelled steps stop fitting on one line. */
+@media (max-width: 383px) {
   .step-label { display: none; }
   .step { padding: 5px 7px; }
 }
@@ -2013,6 +2054,20 @@ body::before {
 /* Holds the width of the remove button on rows that don't get one, so names
    and records stay in the same columns down the list. */
 .fav-remove-spacer { flex: 0 0 auto; width: 15px; }
+
+/* Something loaded, something didn't. Amber rather than red: nothing is broken
+   and nothing is lost — the screen is just showing less than the truth, and
+   saying so is the whole point. */
+.load-warning {
+  margin: 0 0 10px;
+  padding: 8px 11px;
+  border: 1px solid color-mix(in srgb, #e0a04a 45%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, #e0a04a 9%, transparent);
+  color: #e8bd7a;
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
 
 /* ---------- Commander search ---------- */
 

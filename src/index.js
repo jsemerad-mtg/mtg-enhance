@@ -5,12 +5,16 @@ import { currentUser, unlockIdentity, canonicalIdentity } from "./shared-session
 // which is exactly when a stale answer would be most noticeable.
 const noStore = { headers: { "Cache-Control": "no-store" } };
 
-// A failed read returns nothing rather than throwing, but says why where
-// `wrangler tail` can see it — silent fail-closed is how a missing table once
-// looked identical to an empty account for several hours.
+// A failed read returns nothing rather than throwing, and says why where
+// `wrangler tail` can see it — but it also marks itself `failed`, because a
+// log line nobody is watching is not a signal. Twice now a missing table has
+// looked exactly like an empty account: `entitlements` for a few hours, then
+// `game_history` for days. Both times the screen said something reassuring and
+// false. Every endpoint below passes this flag on as `ok: false` so the client
+// can tell "you have nothing" from "we couldn't find out".
 const logAndEmpty = (what) => (e) => {
   console.error(`${what} read failed:`, e?.message || e);
-  return { results: [] };
+  return { results: [], failed: true };
 };
 
 // Seats are written by us as JSON, but they are still a database value being
@@ -204,7 +208,7 @@ export default {
     if (url.pathname === "/api/records" && request.method === "GET") {
       const me = await currentUser(request, env).catch(() => ({ signedIn: false }));
       if (!me.signedIn || !env.DB) {
-        return Response.json({ signedIn: false, byCommander: [], byIdentity: [] }, noStore);
+        return Response.json({ signedIn: false, ok: true, byCommander: [], byIdentity: [] }, noStore);
       }
       // Totals are derived, not stored. The log is the only source of truth,
       // which is what lets a manually-entered game count exactly like a played
@@ -231,6 +235,10 @@ export default {
 
       return Response.json({
         signedIn: true,
+        // Either half failing makes the whole screen untrustworthy: the two
+        // tabs are the same games counted two ways, so one of them silently
+        // short is worse than neither of them showing.
+        ok: !(byCommander.failed || byIdentity.failed),
         byCommander: byCommander.results || [],
         byIdentity: byIdentity.results || [],
       }, noStore);
@@ -239,7 +247,7 @@ export default {
     // Past matches, newest first. `commander` narrows it to one deck.
     if (url.pathname === "/api/history" && request.method === "GET") {
       const me = await currentUser(request, env).catch(() => ({ signedIn: false }));
-      if (!me.signedIn || !env.DB) return Response.json({ signedIn: false, games: [] }, noStore);
+      if (!me.signedIn || !env.DB) return Response.json({ signedIn: false, ok: true, games: [] }, noStore);
 
       const commander = url.searchParams.get("commander");
       const stmt = commander
@@ -253,14 +261,14 @@ export default {
                FROM game_history WHERE user_id = ? ORDER BY played_at DESC LIMIT 100`
           ).bind(me.userId);
 
-      const { results } = await stmt.all().catch(logAndEmpty("history"));
-      const games = (results || []).map((row) => ({
+      const out = await stmt.all().catch(logAndEmpty("history"));
+      const games = (out.results || []).map((row) => ({
         ...row,
         // Parsed here so the client never runs JSON.parse on a database value
         // and never has to decide what a malformed one means.
         seats: safeSeats(row.seats),
       }));
-      return Response.json({ signedIn: true, games }, noStore);
+      return Response.json({ signedIn: true, ok: !out.failed, games }, noStore);
     }
 
     // A game played away from the app. This is a first-class row, not an
@@ -306,14 +314,14 @@ export default {
     // decklist link.
     if (url.pathname === "/api/decks" && request.method === "GET") {
       const me = await currentUser(request, env).catch(() => ({ signedIn: false }));
-      if (!me.signedIn || !env.DB) return Response.json({ signedIn: false, decks: [] }, noStore);
-      const { results } = await env.DB
+      if (!me.signedIn || !env.DB) return Response.json({ signedIn: false, ok: true, decks: [] }, noStore);
+      const out = await env.DB
         .prepare(
           `SELECT id, commander, identity, bracket, deck_url
              FROM decks WHERE user_id = ? ORDER BY commander ASC LIMIT 100`
         )
         .bind(me.userId).all().catch(logAndEmpty("decks"));
-      return Response.json({ signedIn: true, decks: results || [] }, noStore);
+      return Response.json({ signedIn: true, ok: !out.failed, decks: out.results || [] }, noStore);
     }
 
     if (url.pathname === "/api/decks" && request.method === "POST") {

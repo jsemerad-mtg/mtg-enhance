@@ -2674,6 +2674,11 @@ let records = [];          // [{ commander, identity, wins, losses }]
 let byIdentity = [];       // the same games grouped by colour identity
 let decks = [];            // [{ id, commander, identity, bracket, deck_url }]
 let recordsState = "idle"; // "idle" | "loading" | "ready" | "failed" | "guest"
+// Decks failing while records load is its own state: the records are true, the
+// list of commanders is short, and saying nothing is how the last two database
+// faults hid. A banner is enough — losing the whole screen over it would be a
+// worse trade than the missing rows.
+let decksFailed = false;
 
 function recordFor(name) {
   const key = String(name || "").toLowerCase();
@@ -2691,10 +2696,14 @@ function recordBadge(name) {
 async function loadRecords() {
   if (recordsState === "loading") return;
   recordsState = "loading";
+  decksFailed = false;
   try {
     const res = await fetch("/api/records", { credentials: "include", cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    // A 200 whose query threw is not an empty account. `ok` is absent on older
+    // deployments, so only an explicit false counts as a failure.
+    if (data.ok === false) throw new Error("query failed");
     records = Array.isArray(data.byCommander) ? data.byCommander : [];
     byIdentity = Array.isArray(data.byIdentity) ? data.byIdentity : [];
     recordsState = data.signedIn ? "ready" : "guest";
@@ -2702,13 +2711,17 @@ async function loadRecords() {
     // Decks are a separate table from the game log, and the list needs both: a
     // deck saved but never played to a finish still deserves a row, and a
     // commander with games but no saved deck still needs somewhere to put a
-    // link. Failing to load them costs the links, not the records.
+    // link. Losing them costs rows, not records — so the screen still renders,
+    // and says what's missing rather than quietly showing a shorter list.
     try {
       const dres = await fetch("/api/decks", { credentials: "include", cache: "no-store" });
+      if (!dres.ok) throw new Error(`HTTP ${dres.status}`);
       const ddata = await dres.json();
+      if (ddata.ok === false) throw new Error("query failed");
       decks = Array.isArray(ddata.decks) ? ddata.decks : [];
     } catch {
       decks = [];
+      decksFailed = true;
     }
   } catch {
     // Same rule as the session check: a request that didn't come back is not
@@ -2790,6 +2803,14 @@ function recordsHtml() {
       reset — try again in a moment.</p>`;
   }
 
+  // Records came back, saved decks didn't. Commanders you've played still show;
+  // ones you saved but never finished a game with are missing, and so are the
+  // brackets and decklist links.
+  const deckWarning = decksFailed
+    ? `<p class="load-warning">Couldn't load your saved decks, so this list may be
+       short and decklist links are missing. Nothing has been deleted.</p>`
+    : "";
+
   const toggle = `<div class="seg">
     <button type="button" class="seg-btn${recordsView === "commander" ? " is-on" : ""}"
       data-view="commander">By commander</button>
@@ -2807,6 +2828,7 @@ function recordsHtml() {
   const rowData = commanderRows();
   if (!rowData.length) {
     return `${toggle}
+      ${deckWarning}
       <p class="empty-state">Nothing here yet. Add the commanders you play and they'll be one
       tap away at the table; results land here as games finish.</p>
       ${actions}`;
@@ -2842,7 +2864,7 @@ function recordsHtml() {
           : `<span class="fav-remove-spacer" aria-hidden="true"></span>`}
       </li>`);
 
-  return `${toggle}<ul class="fav-list">${rows.join("")}</ul>
+  return `${toggle}${deckWarning}<ul class="fav-list">${rows.join("")}</ul>
     ${recordsView === "commander" ? `<p class="field-note">Tap a commander to see its past games.</p>` : ""}
     ${actions}`;
 }
@@ -2937,6 +2959,9 @@ async function openHistory(commander) {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    // "No games recorded" and "the query threw" look the same from here, and
+    // only one of them is worth believing.
+    if (data.ok === false) throw new Error("query failed");
     if (body()) body().innerHTML = historyHtml(data.games || []);
   } catch {
     if (body()) body().innerHTML = `<p class="empty-state">Couldn't load those games just now.</p>`;
@@ -3325,13 +3350,17 @@ function renderFavorites() {
     host.innerHTML = `<p class="empty-state">Sign in to save the commanders you play most.</p>`;
     return;
   }
+  const warning = decksFailed
+    ? `<p class="load-warning">Couldn't load your saved commanders just now — only the ones
+       this device remembers are shown.</p>`
+    : "";
   const entries = tableCommanders();
   if (entries.length === 0) {
-    host.innerHTML = `<p class="empty-state">Add a commander under My Commanders, or star one
-      here, and it'll be waiting next time.</p>`;
+    host.innerHTML = warning + `<p class="empty-state">Add a commander under My Commanders, or
+      star one here, and it'll be waiting next time.</p>`;
     return;
   }
-  host.innerHTML = `<div class="fav-chips">${entries
+  host.innerHTML = warning + `<div class="fav-chips">${entries
     .map((entry) => {
       const [name, ci] = splitFavorite(entry);
       return `<button type="button" class="fav-chip" data-preselect="${escapeHtml(entry)}">
