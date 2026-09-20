@@ -37,7 +37,7 @@ import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { SOUND_GROUPS } from "../src/sound-catalog.js";
+import { SOUND_GROUPS, baseSoundId, MAX_VARIANTS } from "../src/sound-catalog.js";
 
 const run = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -131,12 +131,35 @@ async function build() {
   const files = fs.readdirSync(SRC_DIR).filter((f) => AUDIO_EXT.has(path.extname(f).toLowerCase()));
 
   // A file whose name isn't a known sound id fails the build rather than being
-  // quietly transcoded into a file nothing will ever play.
-  const unknown = files.filter((f) => !SOUND_GROUPS[path.basename(f, path.extname(f))]);
+  // quietly transcoded into a file nothing will ever play. `combat_damage_2`
+  // counts as known if `combat_damage` does — see baseSoundId.
+  const idOf = (f) => path.basename(f, path.extname(f));
+  const unknown = files.filter((f) => !SOUND_GROUPS[baseSoundId(idOf(f))]);
   if (unknown.length) {
     console.error("\nThese filenames don't match any sound id in src/sound-catalog.js:\n");
     for (const f of unknown) console.error(`  ${f}`);
-    console.error("\nRename them, or add the id to the catalog. Nothing was written.\n");
+    console.error(`\nA name is either a sound id, or that id with _1 to _${MAX_VARIANTS}`);
+    console.error("after it for a randomly-chosen variant. Rename them, or add the id");
+    console.error("to the catalog. Nothing was written.\n");
+    process.exit(1);
+  }
+
+  // A base file AND variants of it is a contradiction: either the sound has
+  // one recording or it has several, and guessing which was meant is how a
+  // take nobody wanted ends up shipping.
+  const byBase = new Map();
+  for (const f of files) {
+    const id = idOf(f);
+    const base = baseSoundId(id);
+    const entry = byBase.get(base) || { bare: [], variants: [] };
+    (id === base ? entry.bare : entry.variants).push(f);
+    byBase.set(base, entry);
+  }
+  const both = [...byBase].filter(([, e]) => e.bare.length && e.variants.length);
+  if (both.length) {
+    console.error("\nThese sounds have both a plain file and numbered variants:\n");
+    for (const [base, e] of both) console.error(`  ${base}: ${[...e.bare, ...e.variants].join(", ")}`);
+    console.error("\nPick one or the other. Nothing was written.\n");
     process.exit(1);
   }
 
@@ -195,21 +218,32 @@ async function build() {
     process.stdout.write(`  + ${id}\n`);
   }
 
-  const have = new Set(sounds.map((s) => s.id));
+  // A sound counts as authored if ANY of its recordings exists, so three
+  // variants of combat_damage doesn't leave it reported as still to do.
+  const have = new Set(sounds.map((s) => s.base));
   const missing = Object.keys(SOUND_GROUPS)
     .filter((id) => !have.has(id))
     .map((id) => ({ id, group: SOUND_GROUPS[id], label: labels[id] || null }));
+
+  // What the client needs in order to pick one at random: base id -> its files.
+  const variants = {};
+  for (const s of sounds) (variants[s.base] ||= []).push(s.id);
+  for (const list of Object.values(variants)) list.sort();
 
   const manifest = {
     generated: new Date().toISOString(),
     target: { lufs: TARGET_LUFS, truePeak: TARGET_TP, toleranceLu: TOLERANCE_LU },
     sounds,
+    variants,
     missing,
   };
   fs.writeFileSync(path.join(OUT_DIR, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 
   const off = sounds.filter((s) => s.offTarget);
-  console.log(`\n${sounds.length} built, ${missing.length} still to author.`);
+  const withVariants = Object.values(variants).filter((v) => v.length > 1).length;
+  console.log(`\n${sounds.length} file${sounds.length === 1 ? "" : "s"} built covering ${
+    have.size} sound${have.size === 1 ? "" : "s"}${
+    withVariants ? ` (${withVariants} with variants)` : ""}, ${missing.length} still to author.`);
   if (off.length) {
     console.log(`\n${off.length} more than ${TOLERANCE_LU} LU from target — worth a listen:`);
     for (const s of off) console.log(`  ${s.id.padEnd(20)} ${s.lufs} LUFS`);
@@ -219,10 +253,14 @@ async function build() {
 
 async function describe(id, file, measured, labels, skipped) {
   const lufs = measured ? Math.round(parseFloat(measured.input_i) * 10) / 10 : null;
+  const base = baseSoundId(id);
   return {
     id,
-    group: SOUND_GROUPS[id],
-    label: labels[id] || id,
+    // The sound this recording is one of. Identical to `id` unless it is a
+    // numbered variant, and it is what decides the group and the label.
+    base,
+    group: SOUND_GROUPS[base],
+    label: labels[base] || base,
     file: `sounds/${id}.m4a`,
     bytes: fs.statSync(file).size,
     duration: await durationOf(file),

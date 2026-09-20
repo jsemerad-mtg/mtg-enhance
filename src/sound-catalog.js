@@ -121,6 +121,26 @@ export const SOUND_GROUPS = {
   brg_devour: "BRG",
 };
 
+// A sound may be recorded several times over — combat_damage_1, _2, _3 — so the
+// same event doesn't play an identical clip forty times in an evening. Which
+// sounds get variants is a decision for whoever records them; nothing here
+// requires any, and a sound with none is just its bare id.
+//
+// The cap is one digit because ten recordings of one event is not a thing
+// anyone will do, and an unbounded suffix is an unbounded thing to validate.
+export const MAX_VARIANTS = 9;
+const VARIANT = /^(.*)_([1-9])$/;
+
+// The id a variant belongs to, or the id itself. Everything that decides
+// anything — what it costs, which palette it needs — asks this first, so a
+// suffix can never be used to slip past a check that the base id wouldn't pass.
+export function baseSoundId(id) {
+  const raw = String(id || "");
+  if (SOUND_GROUPS[raw]) return raw;
+  const m = raw.match(VARIANT);
+  return m && SOUND_GROUPS[m[1]] ? m[1] : raw;
+}
+
 // Does an identity contain every colour a group needs? Colourless is a state
 // rather than a colour, so it matches only itself.
 function covers(identity, group) {
@@ -161,7 +181,9 @@ function boardIdentities(board) {
  * noise on three other people's phones.
  */
 export function soundAllowed(soundId, entitlements, board) {
-  const group = SOUND_GROUPS[soundId];
+  // A variant costs what its base costs. Resolving here rather than at the
+  // call sites means there is one place to get this wrong instead of several.
+  const group = SOUND_GROUPS[baseSoundId(soundId)];
   if (!group) return false;
   if (group === "universal") return true;
 

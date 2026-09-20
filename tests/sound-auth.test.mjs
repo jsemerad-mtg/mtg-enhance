@@ -13,7 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { SOUND_GROUPS, soundAllowed } = await import("../src/sound-catalog.js");
+const { SOUND_GROUPS, soundAllowed, baseSoundId, MAX_VARIANTS } = await import("../src/sound-catalog.js");
 
 let pass = 0;
 const failures = [];
@@ -116,6 +116,41 @@ check("a coloured deck can't reach colorless sounds without owning C",
   soundAllowed("c_equip", OWNS_WUBG, "WUBG") === false);
 check("nor with it — colorless is a state, not a colour",
   soundAllowed("c_equip", owns("C", "WUBG"), "WUBG") === false);
+
+console.log("\nvariants");
+{
+  // The same event forty times in an evening wants more than one recording, so
+  // combat_damage_1 .. _3 are all combat_damage as far as anything that
+  // decides something is concerned.
+  check("a variant resolves to its base", baseSoundId("combat_damage_2") === "combat_damage");
+  check("a plain id resolves to itself", baseSoundId("w_wrath") === "w_wrath");
+  check("an unknown base is left alone rather than invented",
+    baseSoundId("nope_1") === "nope_1", baseSoundId("nope_1"));
+  // A base that itself ends in a digit-looking suffix must win over the split.
+  check("a real id is never split apart",
+    Object.keys(SOUND_GROUPS).every((id) => baseSoundId(id) === id));
+
+  check("a variant of a free sound is free", soundAllowed("combat_damage_3", NOBODY, "R"));
+  // The one that matters: a suffix must not be a way past a check the base
+  // wouldn't pass.
+  check("a variant of a paid sound still needs the palette",
+    soundAllowed("w_wrath_2", NOBODY, "W") === false);
+  check("and plays once it is owned", soundAllowed("w_wrath_2", owns("W"), "W") === true);
+  check("a variant of a sound the deck can't use is still refused",
+    soundAllowed("w_wrath_2", OWNS_ALL, "R") === false);
+  check("a variant of an unknown sound is refused",
+    soundAllowed("nope_1", OWNS_ALL, "R") === false);
+
+  // The suffix is bounded, so there is a finite thing to validate.
+  check("_0 is not a variant", soundAllowed("w_wrath_0", owns("W"), "W") === false);
+  check(`_${MAX_VARIANTS + 1} is past the cap`,
+    soundAllowed(`w_wrath_${MAX_VARIANTS + 1}`, owns("W"), "W") === false);
+  check("a two-digit suffix is not a variant",
+    soundAllowed("w_wrath_10", owns("W"), "W") === false);
+  check("nor a letter", soundAllowed("w_wrath_a", owns("W"), "W") === false);
+  check("nor a nested one", soundAllowed("w_wrath_1_1", owns("W"), "W") === false);
+  check("the cap is one digit", MAX_VARIANTS === 9, String(MAX_VARIANTS));
+}
 
 console.log("\nhostile input");
 check("unknown sound id refused", soundAllowed("../../etc/passwd", OWNS_ALL, "WUBG") === false);

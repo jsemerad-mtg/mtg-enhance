@@ -17,6 +17,38 @@ Loudness is handled for you — two-pass LUFS normalisation, so a sparse sound
 and a dense one end up equally loud rather than equally peaked. Don't
 pre-normalise.
 
+## Variants
+
+Any sound can have up to nine takes, chosen at random each time it fires:
+
+```
+sounds-src/combat_damage_1.wav
+sounds-src/combat_damage_2.wav
+sounds-src/combat_damage_3.wav
+```
+
+Nothing needs them, and most sounds won't want them — it's worth the effort
+where a sound fires constantly and a single clip starts to grate. Combat
+damage, land drop and attack are the obvious candidates; Victory fires once a
+game and never needs a second take.
+
+Rules the build enforces:
+
+- `_1` to `_9` only. `_0`, `_10` and `combat_damage_a` are rejected by name.
+- **Either a plain file or variants, never both.** `combat_damage.wav`
+  alongside `combat_damage_1.wav` fails the build rather than guessing which
+  take you meant.
+- A sound counts as authored once any one of its takes exists, so three
+  variants of combat damage doesn't leave it on the "still to author" list.
+
+Variants are normalised individually, which matters more here than anywhere
+else: three takes recorded at different levels would otherwise be a random
+volume jump every time the sound fired.
+
+A variant costs exactly what its base costs — `w_wrath_2` needs the White
+palette the same as `w_wrath` does — so a numbered suffix is never a way to
+reach a sound you haven't unlocked.
+
 ## What to make first
 
 The order below is the order of usefulness per sound authored:
@@ -29,7 +61,7 @@ The order below is the order of usefulness per sound authored:
 5. **Shards and wedges (10)** — one each, named for the keyword the
    combination actually shipped with, so the word already means something.
 
-**82 in total.** Stopping after any numbered group leaves a coherent set: stop
+**82 in total**, before any variants. Stopping after any numbered group leaves a coherent set: stop
 after 1 and every table has working sounds; after 2 and every coloured deck
 does; after 3 and every deck does.
 
